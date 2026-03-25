@@ -3,18 +3,49 @@
 # found in the LICENSE file.
 
 if DEBUG
+
+choice
+	prompt "Debug device"
+	default DEBUG_DEV_SEMIHOSTING if STDIO_SEMIHOSTING
+	default DEBUG_DEV_UART
+	help
+	  Select debug output device for KDB and panic messages
+
 config DEBUG_DEV_UART
 	bool "UART based implementation"
-	default y
+	depends on STDIO_USE_DBGPORT
 	help
-	  At present, it is the only device for KDB use.
+	  Use UART for debug output (KDB, panic messages).
+	  Requires STDIO_USE_DBGPORT to be enabled.
 
-if !KDB
+config DEBUG_DEV_SEMIHOSTING
+	bool "ARM Semihosting"
+	depends on STDIO_SEMIHOSTING
+	help
+	  Use ARM semihosting for debug output (KDB, panic messages).
+	  Only works with QEMU or active debugger connection.
+
 config DEBUG_DEV_RAM
 	bool "RAM based virtual device"
-	default n
+	depends on !KDB
 	help
-	  A simple implementation of RAM base virtual debug device
-endif
+	  A simple implementation of RAM based virtual debug device.
+	  Not compatible with KDB.
+
+endchoice
+
+config KDB_UART_INPUT
+	bool "UART input for KDB (QEMU semihosting mode)"
+	depends on KDB && DEBUG_DEV_SEMIHOSTING && QEMU
+	default y if KDB && DEBUG_DEV_SEMIHOSTING && QEMU
+	help
+	  Enable USART1 receive interrupt for KDB interactive input while
+	  using semihosting for debug output. Pressing '?' activates KDB.
+
+	  This is QEMU-specific: it hard-codes BRR for the 4 MHz MSI
+	  fallback clock and skips normal GPIO/USART board init.
+	  Do NOT enable on real hardware.
+
+	  Requires QEMU: -serial mon:stdio -semihosting
 
 endif

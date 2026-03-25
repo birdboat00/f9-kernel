@@ -2,7 +2,7 @@
  * memory area definitions
  */
 
-INCLUDE "stm32f1/f9_mem.ld"
+INCLUDE "stm32l4/f9_mem.ld"
 
 ENTRY (__l4_start)
 
@@ -17,15 +17,17 @@ ENTRY (__l4_start)
  * |  text / data      | 30k
  * ~~~~~~~~~~~~~~~~~~~~~
  *
+ * +-------------------+        0x1000 0000
+ * + Bitmap /          +
+ * + kernel AHB        +
+ * +-------------------+
+ *
  * +-------------------+	0x2000 0000
  * +  stack            + 1k
  * +-------------------+	0x2000 0400 (+KERNEL_STACK)
  * +  data / bss       +
  * +-------------------+
  * +..userspace........+
- * +-------------------+
- * + Bitmap /          +
- * + kernel AHB        +
  * +-------------------+
  *
  * +-------------------+	0x4000 0000
@@ -83,7 +85,6 @@ SECTIONS {
 		idle_stack_end = .;
 		. += KERNEL_STACK_SIZE;
 		kernel_stack_end = .;
-		stack_end = .;
 	} > RamLoc
 
 	.data :
@@ -111,6 +112,14 @@ SECTIONS {
 		bitmap_bitband_start = .;
 		*(.bitmap_bitband*)
 		bitmap_bitband_end = .;
+		/* Place bitmaps in RamLoc for QEMU compatibility.
+		 * QEMU's netduinoplus2 doesn't emulate CCM RAM at 0x10000000.
+		 * This also works on real hardware with minimal performance impact
+		 * since bitmaps are small and accessed infrequently.
+		 */
+		bitmap_start = .;
+		*(.bitmap*)
+		bitmap_end = .;
 		bss_end = .;
 	} > RamLoc
 
@@ -137,16 +146,18 @@ SECTIONS {
 		*(.user_bss*)
 		. = ALIGN (256);
 		user_bss_end = .;
+		mem0_start = .;
 	} > RamLoc
 
+	/* STM32L4 has no CCM RAM at 0x10000000.
+	 * Define mem1 symbols as fixed addresses so MEM1 pool is zero-size.
+	 */
+	mem1_start = 0x10000000;
+	mem1_end   = 0x10000000;
 	.data_AHB (NOLOAD) :
 	{
 		kernel_ahb_start = .;
-		bitmap_start = .;
-		*(.bitmap*)
-		bitmap_end = .;
 		kernel_ahb_end = .;
-		mem0_start = .;
 	} > RamLoc
 
 }

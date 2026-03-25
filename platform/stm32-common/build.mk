@@ -8,5 +8,6 @@ platform-common-y = \
 	mpu.o \
 	nvic.o \
 	systick.o \
-	hwtimer.o \
-	usart.o
+	hwtimer.o
+
+platform-common-$(CONFIG_DEBUG_DEV_UART) += usart.o

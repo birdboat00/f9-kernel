@@ -13,18 +13,38 @@
 
 #include INC_PLAT(mpu.c)
 
+static uint32_t mpu_access_bits(const mempool_t *mp)
+{
+    uint32_t user_rw = mp->flags & (MP_UR | MP_UW);
+
+    switch (user_rw) {
+    case MP_UR | MP_UW:
+        return MPU_RASR_AP_PRIV_RW_UN_RW;
+    case MP_UR:
+        return MPU_RASR_AP_PRIV_RW_UN_RO;
+    case 0:
+        return MPU_RASR_AP_PRIV_RW_UN_NO;
+    default:
+        /* Write-only is not representable on Cortex-M MPU. Keep it privileged
+         * only rather than accidentally granting user writes.
+         */
+        return MPU_RASR_AP_PRIV_RW_UN_NO;
+    }
+}
+
 void mpu_setup_region(int n, fpage_t *fp)
 {
     static uint32_t *mpu_base = (uint32_t *) MPU_BASE_ADDR;
     static uint32_t *mpu_attr = (uint32_t *) MPU_ATTR_ADDR;
 
     if (fp) {
+        mempool_t *mp = mempool_getbyid(fp->fpage.mpid);
+        uint32_t xn_bit = (mp->flags & MP_UX) ? 0 : (1 << 28);
+        uint32_t ap_bits = mpu_access_bits(mp);
+
         *mpu_base = (FPAGE_BASE(fp) & MPU_REGION_MASK) | 0x10 | (n & 0xF);
-        *mpu_attr = ((mempool_getbyid(fp->fpage.mpid)->flags & MP_UX)
-                         ? 0
-                         : (1 << 28)) | /* XN bit */
-                    (0x3 << 24)         /* Full access */
-                    | ((fp->fpage.shift - 1) << 1) /* Region size*/ |
+        *mpu_attr = xn_bit | ap_bits |
+                    ((fp->fpage.shift - 1) << 1) /* Region size*/ |
                     1 /* Enable */;
     } else {
         /* Clean MPU region */
@@ -97,7 +117,6 @@ int mpu_select_lru(as_t *as, uint32_t addr)
                 ++i;
                 sfp = sfp->mpu_next;
             }
-
             /* Update MPU */
             mpu_setup_region(i++, fp);
 

@@ -6,15 +6,21 @@
 """
 QEMU Test Runner for F9 Microkernel
 
-Runs test suite or fault tests under QEMU and parses UART output.
+Runs test suite or fault tests under QEMU and parses test output.
 Exits with 0 on success, non-zero on failure.
+
+Automatically detects board from ELF path and uses the correct QEMU machine.
 
 Usage:
     # Test suite
-    python3 scripts/qemu-test.py build/netduinoplus2/f9.elf [-t TIMEOUT]
+    python3 scripts/qemu-test.py build/b-l475e-iot01a/f9.elf [-t TIMEOUT]
 
     # Fault tests (expect kernel panic)
-    python3 scripts/qemu-test.py build/netduinoplus2/f9.elf --fault [-t TIMEOUT]
+    python3 scripts/qemu-test.py build/b-l475e-iot01a/f9.elf --fault [-t TIMEOUT]
+
+Supported boards:
+    - b-l475e-iot01a: QEMU machine 'b-l475e-iot01a' (Cortex-M4F with FPU)
+    - netduinoplus2: QEMU machine 'netduinoplus2' (legacy, no FPU)
 """
 
 import argparse
@@ -22,6 +28,8 @@ import fcntl
 import os
 import re
 import select
+import shutil
+import shlex
 import subprocess
 import sys
 import time
@@ -128,6 +136,116 @@ def set_nonblocking(fd):
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
 
+def detect_qemu_machine(elf_path: str) -> str:
+    """
+    Detect QEMU machine type from ELF path.
+
+    ELF paths contain the board name: build/<board>/f9.elf
+
+    Args:
+        elf_path: Path to the ELF file
+
+    Returns:
+        QEMU machine name
+    """
+    # Board name to QEMU machine mapping
+    BOARD_TO_QEMU_MACHINE = {
+        "b-l475e-iot01a": "b-l475e-iot01a",
+        "netduinoplus2": "netduinoplus2",
+        # discoveryf4 and discoveryf429 not supported in QEMU
+    }
+
+    # Try to extract board from path: .../build/<board>/... or .../<board>/...
+    # Works with default build/ and custom out= directories.
+    for board, machine in BOARD_TO_QEMU_MACHINE.items():
+        if board in elf_path:
+            return machine
+
+    # No known board found in path
+    print(f"[ERROR] Cannot detect QEMU machine from path: {elf_path}")
+    print(
+        f"[ERROR] Path must contain a supported board name: "
+        f"{', '.join(BOARD_TO_QEMU_MACHINE.keys())}"
+    )
+    sys.exit(1)
+
+
+def validate_qemu_machine(qemu: str, machine: str) -> None:
+    """Check that the QEMU binary supports the requested machine.
+
+    Exits with a clear error if the machine is not available, which
+    typically means the QEMU version is too old (b-l475e-iot01a
+    requires QEMU >= 9.0).
+    """
+    try:
+        result = subprocess.run(
+            [qemu, "-M", "help"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        print(f"[ERROR] QEMU not found: {qemu}")
+        sys.exit(127)
+    except (PermissionError, subprocess.TimeoutExpired) as e:
+        print(f"[ERROR] Cannot execute QEMU: {e}")
+        sys.exit(1)
+
+    if result.returncode != 0:
+        print(f"[ERROR] QEMU -M help failed (exit {result.returncode})")
+        if result.stderr:
+            print(f"[ERROR] {result.stderr.strip()}")
+        sys.exit(1)
+
+    # Match exact machine name (first column of -M help output)
+    machines = {line.split()[0] for line in result.stdout.splitlines() if line.strip()}
+    if machine not in machines:
+        ver = subprocess.run(
+            [qemu, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        version_line = ver.stdout.split("\n")[0] if ver.stdout else "unknown"
+        print(f"[ERROR] QEMU does not support machine '{machine}'")
+        print(f"[ERROR] {version_line}")
+        if machine == "b-l475e-iot01a":
+            print("[ERROR] b-l475e-iot01a requires QEMU >= 9.0")
+        sys.exit(1)
+
+
+def build_qemu_cmd(elf_path: str, machine: str) -> list[str]:
+    """Build a QEMU command line for the selected machine.
+
+    For semihosting boards, wraps QEMU in script(1) to provide a PTY.
+    Without a PTY, semihosting output blocks after a few KB because
+    QEMU's internal write buffer fills when stdout is a pipe.
+    """
+    qemu = os.environ.get("QEMU", "qemu-system-arm")
+    validate_qemu_machine(qemu, machine)
+    qemu_cmd = [qemu, "-M", machine, "-nographic", "-serial", "mon:stdio"]
+
+    if machine == "b-l475e-iot01a":
+        qemu_cmd.append("-semihosting")
+
+    qemu_cmd += ["-kernel", elf_path]
+
+    # Wrap in script(1) for PTY so semihosting doesn't block on pipe
+    if machine == "b-l475e-iot01a" and shutil.which("script"):
+        if sys.platform == "darwin":
+            return ["script", "-q", "/dev/null"] + qemu_cmd
+        else:
+            return [
+                "script",
+                "-qe",
+                "-c",
+                " ".join(shlex.quote(a) for a in qemu_cmd),
+                "/dev/null",
+            ]
+
+    return qemu_cmd
+
+
 def run_qemu(elf_path: str, timeout: int) -> TestResults:
     """
     Run QEMU and parse test output.
@@ -141,19 +259,9 @@ def run_qemu(elf_path: str, timeout: int) -> TestResults:
     """
     results = TestResults()
 
-    # Find QEMU binary
-    qemu = os.environ.get("QEMU", "qemu-system-arm")
-
-    cmd = [
-        qemu,
-        "-M",
-        "netduinoplus2",
-        "-nographic",
-        "-serial",
-        "mon:stdio",
-        "-kernel",
-        elf_path,
-    ]
+    # Detect QEMU machine from ELF path
+    machine = detect_qemu_machine(elf_path)
+    cmd = build_qemu_cmd(elf_path, machine)
 
     print(f"[QEMU] Starting: {' '.join(cmd)}")
     print(f"[QEMU] Timeout: {timeout}s")
@@ -167,11 +275,11 @@ def run_qemu(elf_path: str, timeout: int) -> TestResults:
             stdin=subprocess.PIPE,
             text=True,
             encoding="utf-8",
-            errors="replace",  # Replace invalid UTF-8 with replacement character
+            errors="replace",
             bufsize=1,
         )
     except FileNotFoundError:
-        print(f"[ERROR] QEMU not found: {qemu}")
+        print(f"[ERROR] QEMU not found: {cmd[0]}")
         print("[ERROR] Install QEMU or set QEMU environment variable")
         results.exit_code = 127
         return results
@@ -199,18 +307,14 @@ def run_qemu(elf_path: str, timeout: int) -> TestResults:
                         eof_reached = True
                 except (IOError, OSError):
                     pass  # No data available yet (non-blocking)
-                except UnicodeDecodeError as e:
-                    # Handle invalid UTF-8 (should be rare with errors='replace')
-                    print(f"[WARNING] Unicode decode error: {e}", file=sys.stderr)
-                    pass
 
             # Process complete lines (even after EOF to drain buffer)
             while "\n" in line_buffer:
                 line, line_buffer = line_buffer.split("\n", 1)
-                stripped = line.rstrip()
+                stripped = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", line.rstrip("\r"))
 
                 # Parse test markers (before display filtering)
-                exit_requested = parse_test_line(line, results)
+                exit_requested = parse_test_line(stripped, results)
 
                 # Check for test suite start marker (various formats)
                 if "[TEST:START]" in stripped or (
@@ -258,7 +362,12 @@ def run_qemu(elf_path: str, timeout: int) -> TestResults:
             if eof_reached:
                 # Process any remaining incomplete line
                 if line_buffer.strip():
-                    parse_test_line(line_buffer, results)
+                    parse_test_line(
+                        re.sub(
+                            r"[\x00-\x08\x0b-\x1f\x7f]", "", line_buffer.rstrip("\r")
+                        ),
+                        results,
+                    )
                 break
 
             # Check timeout AFTER processing available data (use monotonic clock)
@@ -278,7 +387,14 @@ def run_qemu(elf_path: str, timeout: int) -> TestResults:
                         # Process remaining complete lines
                         for line in line_buffer.split("\n"):
                             if line.strip():
-                                parse_test_line(line, results)
+                                parse_test_line(
+                                    re.sub(
+                                        r"[\x00-\x08\x0b-\x1f\x7f]",
+                                        "",
+                                        line.rstrip("\r"),
+                                    ),
+                                    results,
+                                )
                 except (IOError, OSError):
                     pass
                 if not exit_found:
@@ -329,19 +445,8 @@ def run_qemu_fault(elf_path: str, timeout: int) -> FaultTestResults:
     """
     results = FaultTestResults()
 
-    # Find QEMU binary
-    qemu = os.environ.get("QEMU", "qemu-system-arm")
-
-    cmd = [
-        qemu,
-        "-M",
-        "netduinoplus2",
-        "-nographic",
-        "-serial",
-        "mon:stdio",
-        "-kernel",
-        elf_path,
-    ]
+    machine = detect_qemu_machine(elf_path)
+    cmd = build_qemu_cmd(elf_path, machine)
 
     print(f"[QEMU] Starting fault test: {' '.join(cmd)}")
     print(f"[QEMU] Timeout: {timeout}s")
@@ -355,11 +460,11 @@ def run_qemu_fault(elf_path: str, timeout: int) -> FaultTestResults:
             stdin=subprocess.PIPE,
             text=True,
             encoding="utf-8",
-            errors="replace",  # Replace invalid UTF-8 with replacement character
+            errors="replace",
             bufsize=1,
         )
     except FileNotFoundError:
-        print(f"[ERROR] QEMU not found: {qemu}")
+        print(f"[ERROR] QEMU not found: {cmd[0]}")
         results.exit_code = 127
         return results
 
@@ -383,15 +488,11 @@ def run_qemu_fault(elf_path: str, timeout: int) -> FaultTestResults:
                         eof_reached = True
                 except (IOError, OSError):
                     pass
-                except UnicodeDecodeError as e:
-                    # Handle invalid UTF-8 (should be rare with errors='replace')
-                    print(f"[WARNING] Unicode decode error: {e}", file=sys.stderr)
-                    pass
 
             # Process complete lines
             while "\n" in line_buffer:
                 line, line_buffer = line_buffer.split("\n", 1)
-                stripped = line.rstrip()
+                stripped = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", line.rstrip("\r"))
 
                 if stripped:
                     # Store all output

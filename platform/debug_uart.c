@@ -19,7 +19,7 @@ static struct dbg_uart_t dbg_uart;
 static uint8_t dbg_uart_tx_buffer[SEND_BUFSIZE];
 static uint8_t dbg_uart_rx_buffer[RECV_BUFSIZE];
 
-enum { DBG_ASYNC, DBG_PANIC } dbg_state;
+extern enum { DBG_ASYNC, DBG_PANIC } dbg_state;
 
 static void dbg_uart_recv(void);
 static void dbg_uart_send(int avail);

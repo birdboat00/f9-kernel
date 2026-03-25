@@ -8,6 +8,7 @@
 
 #include INC_PLAT(usart.c)
 
+#ifndef USART_OPS_DEFINED
 struct usart_regs {
     volatile uint16_t SR;
     uint16_t reserved0;
@@ -27,6 +28,7 @@ struct usart_regs {
 
 /* Calculates the value for the USART_BRR */
 /* TODO: Need more precise algorithm */
+#ifndef USART_BAUD_DEFINED
 static int16_t usart_baud(uint32_t base, uint32_t baud)
 {
     uint16_t mantissa;
@@ -55,7 +57,14 @@ static int16_t usart_baud(uint32_t base, uint32_t baud)
 
     return (mantissa << 4) | fraction;
 }
+#endif /* USART_BAUD_DEFINED */
+#endif /* USART_OPS_DEFINED */
 
+/* Interrupt helpers are register-layout agnostic: they use base + offset
+ * computed from the USART_IT_* encoding. Kept in common code for all
+ * platforms since the CR1/CR2/CR3 bit positions are compatible.
+ */
+#ifndef USART_IT_OPS_DEFINED
 void usart_config_interrupt(struct usart_dev *usart, uint16_t it, uint8_t state)
 {
     uint32_t it_reg, it_bit;
@@ -84,7 +93,9 @@ int usart_interrupt_status(struct usart_dev *usart, uint16_t it)
 
     return (*(volatile uint32_t *) it_reg & it_bit);
 }
+#endif /* USART_IT_OPS_DEFINED */
 
+#ifndef USART_OPS_DEFINED
 int usart_status(struct usart_dev *usart, uint16_t st)
 {
     struct usart_regs *uregs;
@@ -134,3 +145,4 @@ void usart_init(struct usart_dev *usart)
     /* Enable reciever and transmitter */
     uregs->CR1 |= (USART_CR1_RE | USART_CR1_TE);
 }
+#endif /* USART_OPS_DEFINED */

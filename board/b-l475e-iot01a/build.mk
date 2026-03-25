@@ -2,9 +2,9 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-CHIP := stm32f4
+CHIP := stm32l4
 PLATFORM := stm32
-STM32_VARIANT := f4
+STM32_VARIANT := l4
 
 board-y = board.o
 loader-board-y = board.loader.o

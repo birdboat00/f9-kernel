@@ -18,6 +18,16 @@
 
 static __USER_DATA uint8_t APBAHBPrescTable[16] = {0, 0, 0, 0, 1, 2, 3, 4,
                                                    1, 2, 3, 4, 6, 7, 8, 9};
+#elif defined(STM32L4X)
+/* L4 uses different PLL architecture: MSI-based clock tree */
+#define PLL_M 1  /*!< Input divider (MSI 4MHz / 1 = 4MHz) */
+#define PLL_N 40 /*!< Multiplier (4MHz * 40 = 160MHz VCO) */
+#define PLL_P 7  /*!< SAI clock divider */
+#define PLL_Q 2  /*!< USB/RNG/SDMMC clock */
+#define PLL_R 2  /*!< System clock divider (160MHz / 2 = 80MHz SYSCLK) */
+
+static __USER_DATA uint8_t APBAHBPrescTable[16] = {0, 0, 0, 0, 1, 2, 3, 4,
+                                                   1, 2, 3, 4, 6, 7, 8, 9};
 #elif defined(STM32F1X)
 #define PLL_MUL 6
 #endif
@@ -30,7 +40,7 @@ void sys_clock_init(void)
 {
     volatile uint32_t startup_count, HSE_status;
 
-#if defined(STM32F4X) && defined(CONFIG_FPU)
+#if (defined(STM32F4X) || defined(STM32L4X)) && defined(CONFIG_FPU)
     /* Enable the FPU */
     *SCB_CPACR |= (0xf << 20);
     /* Enable floating point state preservation */
@@ -52,6 +62,10 @@ void sys_clock_init(void)
 #if defined(STM32F4X)
     /* Reset PLLCFGR register */
     *RCC_PLLCFGR = 0x24003010;
+#elif defined(STM32L4X)
+    /* Reset PLLCFGR register (L4 default value) */
+    *RCC_PLLCFGR = 0x00001000;
+    *RCC_CFGR &= (uint32_t) 0xFF80FFFF;
 #elif defined(STM32F1X)
     *RCC_CFGR &= (uint32_t) 0xFF80FFFF;
 #endif
@@ -59,8 +73,9 @@ void sys_clock_init(void)
     *RCC_CR &= (uint32_t) 0xFFFBFFFF;
 
     /* Disable all interrupts */
-#if defined(STM32F4X)
+#if defined(STM32F4X) || defined(STM32L4X)
     *RCC_CIR = 0x00000000;
+    *RCC_CIR = 0x009F0000;
 #elif defined(STM32F1X)
     *RCC_CIR = 0x009F0000;
 #endif
@@ -90,6 +105,9 @@ void sys_clock_init(void)
         *RCC_APB1ENR |= RCC_APB1ENR_PWREN;
 #if defined(STM32F4X)
         *PWR_CR |= PWR_CR_VOS;
+#elif defined(STM32L4X)
+        /* L4: Voltage scaling range 1 for 80MHz operation */
+        *PWR_CR |= PWR_CR_VOS;
 #endif
         /* HCLK = SYSCLK / 1 */
         *RCC_CFGR |= RCC_CFGR_HPRE_DIV1;
@@ -105,15 +123,30 @@ void sys_clock_init(void)
         /* PLL Options - See RM0090 Reference Manual pg. 95 */
         *RCC_PLLCFGR = PLL_M | (PLL_N << 6) | (((PLL_P >> 1) - 1) << 16) |
                        (RCC_PLLCFGR_PLLSRC_HSE) | (PLL_Q << 24);
+#elif defined(STM32L4X)
+        /* L4 PLL: MSI (4MHz) * N/M/R = 4*40/1/2 = 80MHz
+         * PLLSRC=MSI matches the PLL_M/N/R constants defined above.
+         */
+        *RCC_PLLCFGR = ((PLL_M - 1) << 4) | (PLL_N << 8) |
+                       (RCC_PLLCFGR_PLLSRC_MSI) | (((PLL_R >> 1) - 1) << 25) |
+                       (1 << 24); /* Enable PLLR output for system clock */
 #elif defined(STM32F1X)
         *RCC_CFGR |= PLL_MUL << 18;
 #endif
         /* Enable the main PLL */
         *RCC_CR |= RCC_CR_PLLON;
 
-        /* Wait till the main PLL is ready */
-        while ((*RCC_CR & RCC_CR_PLLRDY) == 0)
-            /* wait */;
+        /* Wait till the main PLL is ready (with timeout) */
+        volatile uint32_t pll_timeout = 0x100000;
+        while (((*RCC_CR & RCC_CR_PLLRDY) == 0) && (pll_timeout > 0)) {
+            pll_timeout--;
+        }
+
+        /* If PLL failed to lock, fall back to HSI/MSI */
+        if (pll_timeout == 0) {
+            *RCC_CR &= ~RCC_CR_PLLON;
+            goto fallback_clock;
+        }
 
         /* Configure Flash prefetch, Instruction cache,
          * Data cache and wait state
@@ -124,6 +157,9 @@ void sys_clock_init(void)
 #endif
 #if defined(STM32F4X)
         *FLASH_ACR = FLASH_ACR_LATENCY(5);
+#elif defined(STM32L4X)
+        /* L4: 4 wait states for 80MHz at 1.8V (per RM0351) */
+        *FLASH_ACR = FLASH_ACR_LATENCY(4);
 #elif defined(STM32F1X)
         *FLASH_ACR = FLASH_ACR_LATENCY(1);
 #endif
@@ -132,12 +168,16 @@ void sys_clock_init(void)
         *RCC_CFGR |= RCC_CFGR_SW_PLL;
 
         /* Wait till the main PLL is used as system clock source */
-        while ((*RCC_CFGR & (uint32_t) RCC_CFGR_SWS_M) != RCC_CFGR_SWS_PLL)
-            /* wait */;
+        volatile uint32_t switch_timeout = 0x10000;
+        while (((*RCC_CFGR & (uint32_t) RCC_CFGR_SWS_M) != RCC_CFGR_SWS_PLL) &&
+               (switch_timeout > 0)) {
+            switch_timeout--;
+        }
     } else {
-        /* HSE failed to start - fall back to HSI.
+    fallback_clock:
+        /* HSE failed to start - fall back to HSI/MSI.
          * This is expected when running under QEMU emulation.
-         * Use HSI (16MHz) as system clock directly without PLL.
+         * Use HSI (16MHz) or MSI (4MHz) as system clock directly without PLL.
          */
 #if defined(STM32F4X)
         /* Configure Flash latency for 16MHz (HSI) */
@@ -149,6 +189,11 @@ void sys_clock_init(void)
         /* Wait till HSI is used as system clock source */
         while ((*RCC_CFGR & (uint32_t) RCC_CFGR_SWS_M) != 0)
             /* wait */;
+#elif defined(STM32L4X)
+        /* Configure Flash latency for 4MHz (MSI default) */
+        *FLASH_ACR = FLASH_ACR_LATENCY(0);
+
+        /* MSI is already selected as system clock by default (SW = 00) */
 #endif
     }
 #if defined(STM32F4X)
@@ -160,56 +205,44 @@ void sys_clock_init(void)
     *SCB_SHCSR |= SCB_SHCSR_USEFAULTENA;
 }
 
-#if defined(STM32F4X)
+#if defined(STM32F4X) || defined(STM32L4X)
 void __USER_TEXT RCC_AHB1PeriphClockCmd(uint32_t rcc_AHB1, uint8_t enable)
 {
-    /* TODO: assertion */
-
     if (enable != 0)
         *RCC_AHB1ENR |= rcc_AHB1;
     else
         *RCC_AHB1ENR &= ~rcc_AHB1;
-
+}
 #elif defined(STM32F1X)
 void __USER_TEXT RCC_AHBPeriphClockCmd(uint32_t rcc_AHB, uint8_t enable)
 {
-    /* TODO: assertion */
-
     if (enable != 0)
         *RCC_AHBENR |= rcc_AHB;
     else
         *RCC_AHBENR &= ~rcc_AHB;
-
-#endif
 }
+#endif
 
-#if defined(STM32F4X)
+#if defined(STM32F4X) || defined(STM32L4X)
 void __USER_TEXT RCC_AHB1PeriphResetCmd(uint32_t rcc_AHB1, uint8_t enable)
 {
-    /* TODO: assertion */
-
     if (enable != 0)
         *RCC_AHB1RSTR |= rcc_AHB1;
     else
         *RCC_AHB1RSTR &= ~rcc_AHB1;
-
+}
 #elif defined(STM32F1X)
 void __USER_TEXT RCC_AHBPeriphResetCmd(uint32_t rcc_AHB, uint8_t enable)
 {
-    /* TODO: assertion */
-
     if (enable != 0)
         *RCC_AHBRSTR |= rcc_AHB;
     else
         *RCC_AHBRSTR &= ~rcc_AHB;
-
-#endif
 }
+#endif
 
 void __USER_TEXT RCC_APB1PeriphClockCmd(uint32_t rcc_APB1, uint8_t enable)
 {
-    /* TODO: assertion */
-
     if (enable != 0)
         *RCC_APB1ENR |= rcc_APB1;
     else
@@ -218,8 +251,6 @@ void __USER_TEXT RCC_APB1PeriphClockCmd(uint32_t rcc_APB1, uint8_t enable)
 
 void __USER_TEXT RCC_APB1PeriphResetCmd(uint32_t rcc_APB1, uint8_t enable)
 {
-    /* TODO: assertion */
-
     if (enable != 0)
         *RCC_APB1RSTR |= rcc_APB1;
     else
@@ -228,8 +259,6 @@ void __USER_TEXT RCC_APB1PeriphResetCmd(uint32_t rcc_APB1, uint8_t enable)
 
 void __USER_TEXT RCC_APB2PeriphClockCmd(uint32_t rcc_APB2, uint8_t enable)
 {
-    /* TODO: assertion */
-
     if (enable != 0)
         *RCC_APB2ENR |= rcc_APB2;
     else
@@ -238,8 +267,6 @@ void __USER_TEXT RCC_APB2PeriphClockCmd(uint32_t rcc_APB2, uint8_t enable)
 
 void __USER_TEXT RCC_APB2PeriphResetCmd(uint32_t rcc_APB2, uint8_t enable)
 {
-    /* TODO: assertion */
-
     if (enable != 0)
         *RCC_APB2RSTR |= rcc_APB2;
     else
@@ -251,8 +278,6 @@ uint8_t __USER_TEXT RCC_GetFlagStatus(uint8_t flag)
     uint32_t tmp = 0;
     uint32_t statusreg = 0;
     uint8_t bitstatus = 0;
-
-    /* TODO: assertion */
 
     tmp = flag >> 5;
     if (tmp == 1)
@@ -273,21 +298,29 @@ uint8_t __USER_TEXT RCC_GetFlagStatus(uint8_t flag)
 
 void __USER_TEXT RCC_GetClocksFreq(struct rcc_clocks *clock)
 {
-#if defined(STM32F4X)
-    uint32_t tmp = 0, presc = 0, pllvco = 0, pllp = 2, pllsource = 0, pllm = 2;
+#if defined(STM32F4X) || defined(STM32L4X)
+    uint32_t tmp = 0, presc = 0, pllvco = 0, pllsource = 0, pllm = 2;
 
     tmp = *RCC_CFGR & RCC_CFGR_SWS_M;
 
     switch (tmp) {
     case 0x00:
+#if defined(STM32L4X)
+        /* L4 default clock is MSI (4MHz), not HSI */
+        clock->sysclk_freq = MSI_VALUE;
+#else
         clock->sysclk_freq = HSI_VALUE;
+#endif
         break;
     case 0x04:
         clock->sysclk_freq = HSE_VALUE;
         break;
     case 0x08:
+#if defined(STM32F4X)
         pllsource = (*RCC_PLLCFGR & RCC_PLLCFGR_PLLSRC_HSE) >> 22;
         pllm = *RCC_PLLCFGR & RCC_PLLCFGR_PLLM;
+        if (pllm == 0)
+            pllm = 2;
 
         if (pllsource != 0)
             pllvco =
@@ -296,11 +329,32 @@ void __USER_TEXT RCC_GetClocksFreq(struct rcc_clocks *clock)
             pllvco =
                 (HSI_VALUE / pllm) * ((*RCC_PLLCFGR & RCC_PLLCFGR_PLLN) >> 6);
 
-        pllp = (((*RCC_PLLCFGR & RCC_PLLCFGR_PLLP) >> 16) + 1) * 2;
+        uint32_t pllp = (((*RCC_PLLCFGR & RCC_PLLCFGR_PLLP) >> 16) + 1) * 2;
         clock->sysclk_freq = pllvco / pllp;
+#elif defined(STM32L4X)
+        /* L4: PLLSRC bits [1:0]: 01=MSI, 10=HSI16, 11=HSE */
+        pllsource = *RCC_PLLCFGR & 0x3;
+        pllm = ((*RCC_PLLCFGR >> 4) & 0x7) + 1;
+
+        uint32_t pll_input;
+        if (pllsource == 3)
+            pll_input = HSE_VALUE;
+        else if (pllsource == 2)
+            pll_input = HSI_VALUE;
+        else
+            pll_input = MSI_VALUE;
+
+        pllvco = (pll_input / pllm) * ((*RCC_PLLCFGR >> 8) & 0x7F);
+        uint32_t pllr = (((*RCC_PLLCFGR >> 25) & 0x3) + 1) * 2;
+        clock->sysclk_freq = pllvco / pllr;
+#endif
         break;
     default:
+#if defined(STM32L4X)
+        clock->sysclk_freq = MSI_VALUE;
+#else
         clock->sysclk_freq = HSI_VALUE;
+#endif
         break;
     }
 

@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        board: [discoveryf4, discoveryf429, netduinoplus2]
+        board: [discoveryf4, discoveryf429, b-l475e-iot01a]
 
     steps:
     - uses: actions/checkout@v6
@@ -52,9 +52,13 @@ jobs:
           - app: tests
             name: "Kernel Test Suite"
             config: USER_APP_TESTS
+            config_extra: ""
           - app: posix
             name: "POSIX Compliance (PSE51+PSE52)"
             config: USER_APP_POSIX
+            # POSIX test suite is larger; disable symbol map and kprobes
+            # to fit kernel + user code in 96KB SRAM1.
+            config_extra: "SYMMAP=n KPROBES=n"
 
     name: test (${{ matrix.app }})
     steps:
@@ -66,15 +70,47 @@ jobs:
         release: '15.2.Rel1'
 
     - name: Install QEMU
-      run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
-
-    - name: Configure for netduinoplus2 with ${{ matrix.name }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+        QEMU_VERSION: '10.2.2'
       run: |
-        make netduinoplus2_defconfig
-        # Enable QEMU mode and selected test suite
+        asset="qemu-${QEMU_VERSION}-arm-softmmu-linux-x86_64.tar.gz"
+
+        # Try prebuilt binary from GitHub release first, fall back to
+        # building from source (needed until qemu-build.yml has run once).
+        dl_err=$(gh release download "qemu-v${QEMU_VERSION}" \
+                   --pattern "$asset" --dir /tmp 2>&1) && dl_ok=1 || dl_ok=0
+        if [ "$dl_ok" = 1 ]; then
+          echo "[QEMU] Using prebuilt binary from release"
+          sudo tar -xzf "/tmp/${asset}" -C /opt
+        elif echo "$dl_err" | grep -qi "release not found"; then
+          echo "[QEMU] Release not found, building from source..."
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libglib2.0-dev libpixman-1-dev
+          curl -fsSL "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" | tar xJ
+          cd "qemu-${QEMU_VERSION}"
+          ./configure --target-list=arm-softmmu --prefix=/opt/qemu --disable-docs
+          make -j$(nproc)
+          sudo make install
+          cd ..
+        else
+          echo "[QEMU] gh release download failed: $dl_err"
+          exit 1
+        fi
+
+        echo "/opt/qemu/bin" >> "$GITHUB_PATH"
+        /opt/qemu/bin/qemu-system-arm --version
+        /opt/qemu/bin/qemu-system-arm -M help | awk '{print $1}' | grep -Fx b-l475e-iot01a
+
+    - name: Configure for b-l475e-iot01a with ${{ matrix.name }}
+      run: |
+        # Bootstrap Kconfig tools (cloned on demand by make, but we
+        # need them before the first make invocation here)
+        make tools/kconfig/kconfiglib.py
+        cp board/b-l475e-iot01a/defconfig .config
+        # Enable selected test suite on top of board defaults
         python3 tools/kconfig/setconfig.py \
-          QEMU=y \
-          ${{ matrix.config }}=y
+          ${{ matrix.config }}=y ${{ matrix.config_extra }}
         python3 tools/kconfig/genconfig.py --header-path include/autoconf.h Kconfig
 
     - name: Verify configuration
@@ -91,7 +127,7 @@ jobs:
     - name: Run MPU fault test
       if: matrix.app == 'tests'
       run: make run-tests FAULT=mpu
-      continue-on-error: true  # MPU not fully emulated in QEMU
+      continue-on-error: true  # MPU fault test may behave differently under QEMU
 
     - name: Run stack canary fault test
       if: matrix.app == 'tests'

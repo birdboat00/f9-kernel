@@ -2,7 +2,7 @@
  * memory area definitions
  */
 
-INCLUDE "f9_mem.ld"
+INCLUDE "stm32l4/f9_mem.ld"
 
 ENTRY (__l4_start)
 
@@ -17,15 +17,17 @@ ENTRY (__l4_start)
  * |  text / data      | 30k
  * ~~~~~~~~~~~~~~~~~~~~~
  *
+ * +-------------------+        0x1000 0000
+ * + Bitmap /          +
+ * + kernel AHB        +
+ * +-------------------+
+ *
  * +-------------------+	0x2000 0000
  * +  stack            + 1k
  * +-------------------+	0x2000 0400 (+KERNEL_STACK)
  * +  data / bss       +
  * +-------------------+
  * +..userspace........+
- * +-------------------+
- * + Bitmap /          +
- * + kernel AHB        +
  * +-------------------+
  *
  * +-------------------+	0x4000 0000
@@ -41,10 +43,10 @@ USERSPACE_BASE		= 0x0000C000;
 
 IDLE_STACK_SIZE		= 0x00000100;
 KERNEL_STACK_SIZE	= 0x00000300;
-ROOT_THREAD_STACK_SIZE	= 0x00000200;
+ROOT_THREAD_STACK_SIZE	= 0x00001000;  /* Increased to 0x1000 (4KB) for fpage loop + semihosting printf */
 
 SECTIONS {
-	.text :
+	.text 0x08000000:
 	{
 		KEEP(*(.isr_vector))
 		. = KERNEL_BASE;
@@ -56,24 +58,7 @@ SECTIONS {
 		KEEP(*(.init_hook))
 		init_hook_end = .;
 		kernel_text_end = .;
-	} > RamLoc
-
-	.user_text :
-	ALIGN (256)
-	{
-		user_text_start = .;
-		*(.user_text*)
-		. = ALIGN (256);
-		user_text_end = .;
-	} > RamLoc
-	end_of_text = .;
-
-	.sym_tab :
-	{
-		symtab_start = .;
-		KEEP(*(.sym_tab*))
-		symtab_end = .;
-	} > RamLoc
+	} > MFlash
 
 	.stack :
 	ALIGN (256)
@@ -83,9 +68,11 @@ SECTIONS {
 		idle_stack_end = .;
 		. += KERNEL_STACK_SIZE;
 		kernel_stack_end = .;
+		stack_end = .;
 	} > RamLoc
 
 	.data :
+	AT( ADDR(.text) + SIZEOF(.text) )
 	ALIGN (256)
 	{
 		kernel_data_start = .;
@@ -110,11 +97,32 @@ SECTIONS {
 		bitmap_bitband_start = .;
 		*(.bitmap_bitband*)
 		bitmap_bitband_end = .;
+		/* Place bitmaps in RamLoc for QEMU compatibility.
+		 * QEMU's netduinoplus2 doesn't emulate CCM RAM at 0x10000000.
+		 * This also works on real hardware with minimal performance impact
+		 * since bitmaps are small and accessed infrequently.
+		 */
+		bitmap_start = .;
+		*(.bitmap*)
+		bitmap_end = .;
 		bss_end = .;
 	} > RamLoc
 
+	user_text_flash_start = ADDR(.text) + 0xc000;
+	.user_text :
+	AT ( 0x0800c000 )
+	ALIGN (256)
+	{
+		user_text_start = .;
+		*(.user_text*)
+		. = ALIGN (256);
+		user_text_end = .;
+	} > RamLoc
+	user_text_flash_end = user_text_flash_start + SIZEOF(.user_text);
+	end_of_text = .;
 
 	.user_data :
+	AT( 0x0800c000 + SIZEOF(.user_text) )
 	ALIGN (256)
 	{
 		user_data_start = .;
@@ -136,16 +144,25 @@ SECTIONS {
 		*(.user_bss*)
 		. = ALIGN (256);
 		user_bss_end = .;
+		mem0_start = .;
 	} > RamLoc
 
+	/* STM32L4 has no CCM RAM at 0x10000000.
+	 * Define mem1 symbols as fixed addresses so MEM1 pool is zero-size.
+	 */
+	mem1_start = 0x10000000;
+	mem1_end   = 0x10000000;
 	.data_AHB (NOLOAD) :
 	{
 		kernel_ahb_start = .;
-		bitmap_start = .;
-		*(.bitmap*)
-		bitmap_end = .;
 		kernel_ahb_end = .;
-		mem0_start = .;
 	} > RamLoc
+
+	.sym_tab ( 0x800c000 + SIZEOF(.user_text) + SIZEOF(.user_data) ) :
+	{
+		symtab_start = .;
+		KEEP(*(.sym_tab*))
+		symtab_end = .;
+	} > MFlash
 
 }

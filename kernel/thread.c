@@ -56,6 +56,7 @@ void *current_utcb __USER_DATA;
 
 /* KIP declarations */
 static fpage_t *kip_fpage, *kip_extra_fpage;
+static fpage_t *utext_fpage, *udata_fpage, *ubss_fpage;
 extern kip_t kip;
 extern char *kip_extra;
 
@@ -87,6 +88,43 @@ void thread_init_subsys()
             "THREAD: Failed to create KIP extra fpage (addr=%p sz=%d ret=%d)\n",
             kip_extra, CONFIG_KIP_EXTRA_SIZE, ret);
     }
+
+    /* Create fpages for shared user sections - needed by all user threads.
+     * These sections contain code and data common to all user programs.
+     */
+    extern uint32_t user_text_start, user_text_end;
+    extern uint32_t user_data_start, user_data_end;
+    extern uint32_t user_bss_start, user_bss_end;
+
+    struct {
+        memptr_t start;
+        memptr_t end;
+        fpage_t **fp;
+        const char *name;
+    } user_sections[] = {
+        {(memptr_t) &user_text_start, (memptr_t) &user_text_end, &utext_fpage,
+         "UTEXT"},
+        {(memptr_t) &user_data_start, (memptr_t) &user_data_end, &udata_fpage,
+         "UDATA"},
+        {(memptr_t) &user_bss_start, (memptr_t) &user_bss_end, &ubss_fpage,
+         "UBSS"},
+    };
+
+    for (int s = 0; s < 3; ++s) {
+        size_t sz = user_sections[s].end - user_sections[s].start;
+        *user_sections[s].fp = NULL;
+        if (sz == 0)
+            continue;
+        last = NULL;
+        ret = assign_fpages_ext(-1, NULL, user_sections[s].start, sz,
+                                user_sections[s].fp, &last);
+        if (ret < 0 || !*user_sections[s].fp) {
+            dbg_printf(DL_KDB,
+                       "THREAD: Failed to create %s fpage (addr=%p sz=%d)\n",
+                       user_sections[s].name, user_sections[s].start, sz);
+            *user_sections[s].fp = NULL;
+        }
+    }
 }
 
 INIT_HOOK(thread_init_subsys, INIT_LEVEL_KERNEL);
@@ -94,32 +132,25 @@ INIT_HOOK(thread_init_subsys, INIT_LEVEL_KERNEL);
 extern tcb_t *caller;
 
 /*
- * Return upper_bound using binary search
+ * Return the insertion point for @globalid in the sorted thread_map array.
+ * The @count argument is the current number of valid entries, so the search
+ * range is [0, count).
  */
-static int thread_map_search(l4_thread_t globalid, int from, int to)
+static int thread_map_search(l4_thread_t globalid, int count)
 {
     int tid = GLOBALID_TO_TID(globalid);
+    int from = 0;
+    int to = count;
 
-    /* Upper bound if beginning of array */
-    if (to == from || GLOBALID_TO_TID(thread_map[from]->t_globalid) >= tid)
-        return from;
-
-    while (from <= to) {
-        if ((to - from) <= 1)
-            return to;
-
+    while (from < to) {
         int mid = from + (to - from) / 2;
 
-        if (GLOBALID_TO_TID(thread_map[mid]->t_globalid) > tid)
+        if (GLOBALID_TO_TID(thread_map[mid]->t_globalid) >= tid)
             to = mid;
-        else if (GLOBALID_TO_TID(thread_map[mid]->t_globalid) < tid)
-            from = mid;
         else
-            return mid;
+            from = mid + 1;
     }
-
-    /* not reached */
-    return -1;
+    return from;
 }
 
 /*
@@ -130,7 +161,7 @@ static void thread_map_insert(l4_thread_t globalid, tcb_t *thr)
     if (thread_count == 0) {
         thread_map[thread_count++] = thr;
     } else {
-        int i = thread_map_search(globalid, 0, thread_count);
+        int i = thread_map_search(globalid, thread_count);
         int j = thread_count;
 
         /* Move forward
@@ -151,7 +182,7 @@ static void thread_map_delete(l4_thread_t globalid)
     if (thread_count == 1) {
         thread_count = 0;
     } else {
-        int i = thread_map_search(globalid, 0, thread_count);
+        int i = thread_map_search(globalid, thread_count);
         --thread_count;
         for (; i < thread_count; i++)
             thread_map[i] = thread_map[i + 1];
@@ -169,17 +200,21 @@ tcb_t *thread_init(l4_thread_t globalid, utcb_t *utcb)
         set_caller_error(UE_OUT_OF_MEM);
         return NULL;
     }
-
     thread_map_insert(globalid, thr);
     thr->t_localid = 0x0;
 
     thr->t_child = NULL;
     thr->t_parent = NULL;
     thr->t_sibling = NULL;
-
     thr->t_globalid = globalid;
-    if (utcb)
+    thr->t_pager = 0;
+    thr->stack_canary_needs_init = 0;
+    thr->utcb_needs_sync = 0;
+    if (utcb && (!caller || thread_ispriviliged(caller))) {
         utcb->t_globalid = globalid;
+    } else {
+        thr->utcb_needs_sync = utcb ? 1 : 0;
+    }
 
     thr->as = NULL;
     thr->utcb = utcb;
@@ -217,12 +252,8 @@ tcb_t *thread_create(l4_thread_t globalid, utcb_t *utcb)
 
     assert((intptr_t) caller);
 
-    dbg_printf(DL_KDB, "THREAD_CREATE: gid=%p tid=%d utcb=%p\n", globalid, id,
-               utcb);
-
     if (id < THREAD_SYS || globalid == L4_ANYTHREAD ||
         globalid == L4_ANYLOCALTHREAD) {
-        dbg_printf(DL_KDB, "THREAD_CREATE: rejected (id=%d)\n", id);
         set_caller_error(UE_TC_NOT_AVAILABLE);
         return NULL;
     }
@@ -233,9 +264,16 @@ tcb_t *thread_create(l4_thread_t globalid, utcb_t *utcb)
     /* Place under */
     if (caller->t_child) {
         tcb_t *t = caller->t_child;
+        int guard = CONFIG_MAX_THREADS;
 
-        while (t->t_sibling != 0)
+        while (t->t_sibling != 0 && --guard > 0)
             t = t->t_sibling;
+        if (guard <= 0) {
+            dbg_printf(DL_KDB,
+                       "THREAD_CREATE: child chain cycle caller=%t child=%p\n",
+                       caller->t_globalid, caller->t_child);
+            return thr;
+        }
         t->t_sibling = thr;
 
         thr->t_localid = t->t_localid + (1 << 6);
@@ -326,6 +364,13 @@ void thread_space(tcb_t *thr, l4_thread_t spaceid, utcb_t *utcb)
                        thr->t_globalid);
         }
 
+        /* Shared user sections (UTEXT/UDATA/UBSS) are mapped by the root
+         * thread via map_user_sections() -> L4_Map IPC after ThreadControl.
+         * Do NOT map them here: map_fpage() only covers the first fpage of
+         * each chain, and the duplicate partial mappings waste MPU entries
+         * on the 8-region Cortex-M MPU.
+         */
+
         dbg_printf(DL_THREAD, "\tNew space: as: %p, utcb: %p \n", thr->as,
                    utcb);
     } else {
@@ -406,6 +451,25 @@ void thread_init_ctx(void *sp, void *pc, void *regs, tcb_t *thr)
     ((uint32_t *) sp)[REG_xPSR] = 0x1000000; /* Thumb bit on */
 }
 
+void thread_init_prebuilt_ctx(void *sp, tcb_t *thr)
+{
+    int i;
+
+    sp -= RESERVED_STACK;
+    thr->ctx.sp = (uint32_t) sp;
+
+    if (GLOBALID_TO_TID(thr->t_globalid) >= THREAD_ROOT) {
+        thr->ctx.ret = 0xFFFFFFFD;
+        thr->ctx.ctl = 0x3;
+    } else {
+        thr->ctx.ret = 0xFFFFFFF9;
+        thr->ctx.ctl = 0x0;
+    }
+
+    for (i = 0; i < 8; i++)
+        thr->ctx.regs[i] = 0;
+}
+
 /* Kernel has no fake context, instead of that we rewind
  * stack and reuse it for kernel thread
  *
@@ -435,10 +499,10 @@ void thread_init_kernel_ctx(void *sp, tcb_t *thr)
  */
 tcb_t *thread_by_globalid(l4_thread_t globalid)
 {
-    int idx = thread_map_search(globalid, 0, thread_count);
+    int idx = thread_map_search(globalid, thread_count);
 
-    if (GLOBALID_TO_TID(thread_map[idx]->t_globalid) !=
-        GLOBALID_TO_TID(globalid))
+    if (idx >= thread_count || GLOBALID_TO_TID(thread_map[idx]->t_globalid) !=
+                                   GLOBALID_TO_TID(globalid))
         return NULL;
     return thread_map[idx];
 }
@@ -477,7 +541,12 @@ void thread_switch(tcb_t *thr)
     /* Check stack canary before switching to this thread.
      * If canary is corrupted, the thread's stack has overflowed.
      */
-    if (!thread_check_canary(thr)) {
+    if (thr->stack_canary_needs_init) {
+        if (thr->as)
+            mpu_select_lru(thr->as, (uint32_t) thr->stack_base);
+        thread_init_canary(thr);
+        thr->stack_canary_needs_init = 0;
+    } else if (!thread_check_canary(thr)) {
         panic("Stack overflow: tid=%t, stack_base=%p, canary=%p\n",
               thr->t_globalid, thr->stack_base,
               thr->stack_base ? *((uint32_t *) thr->stack_base) : 0);
@@ -489,6 +558,13 @@ void thread_switch(tcb_t *thr)
         as_setup_mpu(current->as, current->ctx.sp,
                      ((uint32_t *) current->ctx.sp)[REG_PC],
                      current->stack_base, current->stack_size);
+    if (current->utcb && current->utcb_needs_sync) {
+        if (current->as)
+            mpu_select_lru(current->as, (uint32_t) current->utcb);
+        current->utcb->t_globalid = current->t_globalid;
+        current->utcb->t_pager = current->t_pager;
+        current->utcb_needs_sync = 0;
+    }
 }
 
 /**

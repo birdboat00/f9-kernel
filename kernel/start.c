@@ -20,6 +20,7 @@
 #include <ktimer.h>
 #include <lib/stdio.h>
 #include <lib/string.h>
+#include <platform/cortex_m.h>
 #include <platform/debug_device.h>
 #include <platform/irq.h>
 #include <softirq.h>
@@ -49,6 +50,17 @@ int main(void)
 #ifdef CONFIG_FPU
     *SCB_CPACR |= (SCB_CPACR_CP10_FULL | SCB_CPACR_CP11_FULL);
 #endif
+
+    /* Configure CCR early to prevent UsageFaults:
+     * - Enable 8-byte stack alignment (STKALIGN)
+     * - Disable unaligned access traps (clear UNALIGN_TRP for Cortex-M4)
+     */
+    uint32_t ccr = *SCB_CCR;
+    ccr |= SCB_CCR_STKALIGN;     /* Enable stack alignment */
+    ccr &= ~SCB_CCR_UNALIGN_TRP; /* Allow unaligned access */
+    *SCB_CCR = ccr;
+    __DSB();
+    __ISB();
 
     run_init_hook(INIT_LEVEL_PLATFORM);
 

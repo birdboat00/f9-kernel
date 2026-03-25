@@ -7,8 +7,8 @@ F9 Microkernel supports the following boards:
 * [STM32F429I-DISC1](https://www.st.com/en/evaluation-tools/32f429idiscovery.html)
 * [NUCLEO-F429ZI](https://www.st.com/en/evaluation-tools/nucleo-f429zi.html)
   - All supported boards are based on the ARM Cortex-M4F core. F9 should work on any STM32F40x/STM32F429/STM32F439 microcontroller.
-* Netduino Plus 2 (STM32F405RGT6)
-  - Supported by upstream [QEMU for emulation](https://www.qemu.org/docs/master/system/arm/stm32.html), making it ideal for development and testing without hardware.
+* [B-L475E-IOT01A](https://www.st.com/en/evaluation-tools/b-l475e-iot01a.html)
+  - Supported by upstream QEMU and used as the default emulation target.
 
 ## Toolchain Requirements
 
@@ -89,16 +89,18 @@ KDB communicates via USART. The port can be selected during `make config`.
 
 ## QEMU Emulation
 
-For Netduino Plus 2 under QEMU, the default configuration uses USART1, which
-QEMU routes to the console. Run with:
+For B-L475E-IOT01A under QEMU, semihosting carries normal console output and
+USART1 is reserved for KDB input. Run with:
 
 ```shell
-qemu-system-arm -M netduinoplus2 -nographic -serial mon:stdio \
-    -kernel build/netduinoplus2/f9.elf
+qemu-system-arm -M b-l475e-iot01a -nographic \
+    -semihosting -serial mon:stdio \
+    -kernel build/b-l475e-iot01a/f9.elf
 ```
 
-Note: `-serial mon:stdio` is required for interactive KDB shell.
-The `mon:` prefix enables QEMU monitor access via `Ctrl+a` and `c`. Exit with `Ctrl+a` and `x`.
+Note: `-serial mon:stdio` is still required for interactive KDB shell.
+The `mon:` prefix enables QEMU monitor access via `Ctrl+A` then `c`. Exit with
+`Ctrl+A` then `x`.
 
 ## Serial Terminal Setup
 

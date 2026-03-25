@@ -33,10 +33,10 @@ while adding advanced features from industrial RTOSes.
 - UTCBs: Always-mapped user-level thread control blocks for fast syscall argument access
 
 ### Hardware Support
-- ARM Cortex-M3/M4/M4F: Optimized for Cortex-M architecture
+- ARM Cortex-M4/M4F: Optimized for Cortex-M architecture
 - NVIC: Nested Vectored Interrupt Controller integration
 - Bit Banding: Hardware bit manipulation support (where available)
-- FPU: Lazy context switching for Cortex-M4F floating-point unit
+- FPU: Lazy context switching for Cortex-M4F floating-point unit (VFPv4-D16)
 
 ### Development Tools
 - KDB: In-kernel debugger with thread, memory, and timer inspection
@@ -124,13 +124,16 @@ make flash     # Flash to STM32F4 board (requires stlink)
 make qemu
 ```
 
-Press `Ctrl+A` and then `X` to exit QEMU. Press `?` in KDB for debug menu (requires `CONFIG_KDB`).
+Press `Ctrl+A` then `X` to exit QEMU. Press `?` for KDB debug menu (requires `CONFIG_KDB`).
+
+QEMU uses the B-L475E-IOT01A machine with ARM semihosting for output and USART1
+for KDB input. Both `-semihosting` and `-serial mon:stdio` are added automatically.
 
 ### Supported Hardware
 - STM32F4DISCOVERY (STM32F407VG)
 - STM32F429I-DISC1 (STM32F429ZI)
 - NUCLEO-F429ZI (STM32F429ZI)
-- Netduino Plus 2 (STM32F405RG) - QEMU only, used for automated testing
+- B-L475E-IOT01A (STM32L475VG) - QEMU target with FPU and MPU emulation
 
 For detailed instructions including toolchain setup, serial configuration, and debugging,
 see [Documentation/quick-start.md](Documentation/quick-start.md).
@@ -149,8 +152,9 @@ Run `make config` to configure options via menu. Key options:
 | `CONFIG_KTIMER_TICKLESS` | Tickless scheduling (power efficiency) |
 | `CONFIG_MAX_THREADS` | Maximum number of threads |
 | `CONFIG_MAX_KT_EVENTS` | Maximum kernel timer events |
+| `CONFIG_FPU` | FPU support with lazy context switching (Cortex-M4F) |
 | `CONFIG_PANIC_DUMP_STACK` | Dump stack on kernel panic |
-| `CONFIG_QEMU` | QEMU emulation workarounds |
+| `CONFIG_QEMU` | QEMU emulation mode (auto-enabled for B-L475E-IOT01A) |
 
 For build system details, see [Documentation/build-system.md](Documentation/build-system.md).
 

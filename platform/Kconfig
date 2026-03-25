@@ -11,15 +11,10 @@ config BITMAP_BITBAND
 config FPU
 	bool "Floating point support"
 	default n
-	depends on !PLATFORM_STM32F1
-
-config SEMIHOST
-	bool "Semihosting enable"
-	default n
-	depends on PLATFORM_STM32F1
 
 choice
 	prompt "Standard I/O device"
+	default STDIO_SEMIHOSTING if QEMU
 	default STDIO_USE_DBGPORT
 	help
 	  Select input/output device for stdio
@@ -30,6 +25,16 @@ config STDIO_NODEV
 config STDIO_USE_DBGPORT
 	bool "Debug serial IO"
 	select DEBUG
+
+config STDIO_SEMIHOSTING
+	bool "ARM Semihosting (QEMU/Debugger)"
+	help
+	  Use ARM semihosting for console I/O via debugger interface.
+
+	  QEMU: Requires -semihosting flag (fast, reliable)
+	  Real hardware: Requires active debugger (OpenOCD/J-Link/pyOCD)
+	                 VERY SLOW - only for debugging
+	                 Will CRASH if no debugger attached!
 
 endchoice
 
@@ -55,8 +60,8 @@ endif
 if PLATFORM_STM32F429
 source "platform/stm32f429/Kconfig"
 endif
-if PLATFORM_STM32F1
-source "platform/stm32f1/Kconfig"
+if PLATFORM_STM32L4
+source "platform/stm32l4/Kconfig"
 endif
 
 endmenu

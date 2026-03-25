@@ -100,10 +100,11 @@ struct tcb {
 
     l4_thread_t t_globalid; /* 4 bytes (16-19) */
     l4_thread_t t_localid;  /* 4 bytes (20-23) */
+    l4_thread_t t_pager;    /* 4 bytes (24-27) */
 
-    memptr_t stack_base; /* 4 bytes (24-27) */
-    size_t stack_size;   /* 4 bytes (28-31) */
-    /* End of Cache Line 0 (32 bytes) */
+    memptr_t stack_base; /* 4 bytes (28-31) */
+    size_t stack_size;   /* 4 bytes (32-35) */
+    /* End of hot fields */
 
     context_t ctx;
 
@@ -171,6 +172,8 @@ struct tcb {
      * Allows IPC path to skip notification checks with single word read.
      */
     uint8_t notify_pending;
+    uint8_t utcb_needs_sync;
+    uint8_t stack_canary_needs_init;
 
     uint8_t _notify_pad[1]; /* Alignment padding */
 
@@ -204,8 +207,11 @@ static inline void thread_init_canary(tcb_t *thr)
 /* Check stack canary. Returns 1 if valid, 0 if corrupted. */
 static inline int thread_check_canary(tcb_t *thr)
 {
-    if (!thr->stack_base)
-        return 1; /* No stack tracking, skip check */
+    /* Skip check if stack_base is NULL or unaligned (prevents UsageFault).
+     * User threads may have uninitialized/corrupted stack_base.
+     */
+    if (!thr->stack_base || ((uint32_t) thr->stack_base & 0x3))
+        return 1;
     return *((uint32_t *) thr->stack_base) == STACK_CANARY;
 }
 
@@ -218,6 +224,7 @@ tcb_t *thread_create(l4_thread_t globalid, utcb_t *utcb);
 void thread_destroy(tcb_t *thr);
 void thread_space(tcb_t *thr, l4_thread_t spaceid, utcb_t *utcb);
 void thread_init_ctx(void *sp, void *pc, void *rx, tcb_t *thr);
+void thread_init_prebuilt_ctx(void *sp, tcb_t *thr);
 void thread_init_kernel_ctx(void *sp, tcb_t *thr);
 void thread_switch(tcb_t *thr);
 

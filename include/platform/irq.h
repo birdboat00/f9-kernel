@@ -200,6 +200,56 @@ extern volatile uint32_t __irq_saved_regs[8];
     __irq_save(ctx);
 #endif
 
+#ifdef CONFIG_FPU
+/* FPU-aware irq_restore: single asm block to prevent the compiler from
+ * reordering or clobbering registers between dependent operations.
+ *
+ * We pass a single pointer (ctx) and load all fields inside the asm to
+ * avoid running out of input registers (ARM has only ~6 allocatable GPRs
+ * after clobbers). The ctx pointer is in r3 throughout.
+ *
+ * Sequence: load ret/sp/ctl from ctx → set MSP/PSP → restore d8-d15
+ * if fp_flag → ldm {r4-r11} → msr CONTROL → cpsie i.
+ */
+#define irq_restore(ctx)                                                       \
+    do {                                                                       \
+        context_t *_ctx = (ctx);                                               \
+        __asm__ __volatile__(                                                  \
+            "mov r3, %[c]\n\t" /* Load ret, sp, ctl from context */            \
+            "ldr lr, [r3, %[off_ret]]\n\t"                                     \
+            "ldr r0, [r3, %[off_sp]]\n\t"                                      \
+            "ldr r2, [r3, %[off_ctl]]\n\t" /* Select MSP or PSP based on       \
+                                              EXC_RETURN */                    \
+            "and r4, lr, #0xf\n\t"                                             \
+            "teq r4, #0x9\n\t"                                                 \
+            "ite eq\n\t"                                                       \
+            "msreq msp, r0\n\t"                                                \
+            "msrne psp, r0\n\t" /* Restore FPU callee-saved regs if fp_flag    \
+                                   set */                                      \
+            "ldr r0, [r3, %[off_fpf]]\n\t"                                     \
+            "cmp r0, #0\n\t"                                                   \
+            "beq 1f\n\t"                                                       \
+            "add r0, r3, %[off_fpr]\n\t"                                       \
+            "vldm r0, {d8-d15}\n\t"                                            \
+            "1:\n\t" /* Restore R4-R11 (MUST be last - clobbers everything) */ \
+            "add r0, r3, %[off_reg]\n\t"                                       \
+            "ldm r0, {r4-r11}\n\t" /* Set CONTROL and barrier */               \
+            "msr control, r2\n\t"                                              \
+            "isb\n\t"                                                          \
+            "cpsie i"                                                          \
+            :                                                                  \
+            :                                                                  \
+            [c] "r"(_ctx), [off_ret] "i"(__builtin_offsetof(context_t, ret)),  \
+            [off_sp] "i"(__builtin_offsetof(context_t, sp)),                   \
+            [off_ctl] "i"(__builtin_offsetof(context_t, ctl)),                 \
+            [off_fpf] "i"(__builtin_offsetof(context_t, fp_flag)),             \
+            [off_fpr] "i"(__builtin_offsetof(context_t, fp_regs)),             \
+            [off_reg] "i"(__builtin_offsetof(context_t, regs))                 \
+            : "r0", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10",     \
+              "r11", "lr", "cc", "memory", "d8", "d9", "d10", "d11", "d12",    \
+              "d13", "d14", "d15");                                            \
+    } while (0)
+#else /* ! CONFIG_FPU */
 #define __irq_restore(ctx)                                   \
     __asm__ __volatile__("mov lr, %0" : : "r"((ctx)->ret));  \
     __asm__ __volatile__("mov r0, %0" : : "r"((ctx)->sp));   \
@@ -213,15 +263,6 @@ extern volatile uint32_t __irq_saved_regs[8];
     __asm__ __volatile__("ldm r0, {r4-r11}");                \
     __asm__ __volatile__("msr control, r2\n\tisb" ::: "memory");
 
-#ifdef CONFIG_FPU
-#define irq_restore(ctx)                                                   \
-    __irq_restore(ctx);                                                    \
-    if ((ctx)->fp_flag) {                                                  \
-        __asm__ __volatile__("mov r0, %0" : : "r"((ctx)->fp_regs) : "r0"); \
-        __asm__ __volatile__("vldm r0, {d8-d15}");                         \
-    }                                                                      \
-    __asm__ __volatile__("cpsie i");
-#else /* ! CONFIG_FPU */
 #define irq_restore(ctx) \
     __irq_restore(ctx);  \
     __asm__ __volatile__("cpsie i");
@@ -254,41 +295,45 @@ extern volatile uint32_t __irq_saved_regs[8];
         __asm__ __volatile__("bx lr");    \
     }
 
-#define schedule_in_irq()                                                   \
-    {                                                                       \
-        register tcb_t *sel;                                                \
-        sel = schedule_select();                                            \
-        /* Check current thread canary before any return path.              \
-         * Catches overflow that occurred while thread ran. */              \
-        if (!thread_check_canary((tcb_t *) current)) {                      \
-            panic(                                                          \
-                "Stack overflow (current): tid=%t, "                        \
-                "stack_base=%p, canary=%p\n",                               \
-                current->t_globalid, current->stack_base,                   \
-                current->stack_base ? *((uint32_t *) current->stack_base)   \
-                                    : 0);                                   \
-        }                                                                   \
-        if (sel != current) {                                               \
-            /* Check next thread before switching to it */                  \
-            if (!thread_check_canary(sel)) {                                \
-                panic(                                                      \
-                    "Stack overflow (next): tid=%t, "                       \
-                    "stack_base=%p, canary=%p\n",                           \
-                    sel->t_globalid, sel->stack_base,                       \
-                    sel->stack_base ? *((uint32_t *) sel->stack_base) : 0); \
-            }                                                               \
-            context_switch(current, sel);                                   \
-        } else {                                                            \
-            /* No context switch - restore saved registers                  \
-             * and return via irq_return path */                            \
-            extern volatile uint32_t __irq_saved_regs[8];                   \
-            __asm__ __volatile__(                                           \
-                "mov r0, %0\n\t"                                            \
-                "ldm r0, {r4-r11}"                                          \
-                :                                                           \
-                : "r"(__irq_saved_regs)                                     \
-                : "r0");                                                    \
-        }                                                                   \
+#define schedule_in_irq()                                                    \
+    {                                                                        \
+        register tcb_t *sel;                                                 \
+        sel = schedule_select();                                             \
+        /* Check current thread canary before any return path.               \
+         * Catches overflow that occurred while thread ran. */               \
+        if (!thread_check_canary((tcb_t *) current)) {                       \
+            panic(                                                           \
+                "Stack overflow (current): tid=%t, "                         \
+                "stack_base=%p, canary=%p\n",                                \
+                current->t_globalid, current->stack_base,                    \
+                (current->stack_base &&                                      \
+                 !((uint32_t) current->stack_base & 0x3))                    \
+                    ? *((uint32_t *) current->stack_base)                    \
+                    : 0xDEADBEEF);                                           \
+        }                                                                    \
+        if (sel != current) {                                                \
+            /* Check next thread before switching to it */                   \
+            if (!thread_check_canary(sel)) {                                 \
+                panic(                                                       \
+                    "Stack overflow (next): tid=%t, "                        \
+                    "stack_base=%p, canary=%p\n",                            \
+                    sel->t_globalid, sel->stack_base,                        \
+                    (sel->stack_base && !((uint32_t) sel->stack_base & 0x3)) \
+                        ? *((uint32_t *) sel->stack_base)                    \
+                        : 0xDEADBEEF);                                       \
+            }                                                                \
+            context_switch(current, sel);                                    \
+        } else {                                                             \
+            /* No context switch - restore saved registers                   \
+             * and return via irq_return path */                             \
+            extern volatile uint32_t __irq_saved_regs[8];                    \
+            __asm__ __volatile__(                                            \
+                "mov r0, %0\n\t"                                             \
+                "ldm r0, {r4-r11}"                                           \
+                :                                                            \
+                : "r"(__irq_saved_regs)                                      \
+                : "r0");                                                     \
+        }                                                                    \
     }
 
 #define request_schedule()               \
