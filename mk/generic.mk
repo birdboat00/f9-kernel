@@ -28,7 +28,7 @@ cmd_strip = $(STRIP) $< -o $@
 cmd_elf_relink = $(LD) $(LDFLAGS) $(objs) $(symmap_obj-list) -o $@ \
 	-L platform -T $(CHIP)/$(F9_LD_FILE) $(LIBGCC) \
 	-Map $(out)/$*.map
-cmd_c_to_o = $(CC) $(CFLAGS) -MMD -MF $@.d -c $< -o $@
+cmd_c_to_o = $(CC) $(CFLAGS) $(CFLAGS_KERNEL) -MMD -MF $@.d -c $< -o $@
 cmd_c_to_o_user = $(CC) $(CFLAGS_INCLUDE_USER) $(CFLAGS) $(CFLAGS_USER) -MMD -MF $@.d -c $< -o $@
 cmd_c_to_build = $(BUILDCC) $(BUILD_CFLAGS) $(BUILD_LDFLAGS) \
 	         -MMD -MF $@.d $< -o $@
@@ -108,13 +108,19 @@ distclean: clean
 	-rm -rf $(out_host) $(KCONFIG_DIR)
 	-rm -f $(CONFIG) $(CONFIG).old include/autoconf.h
 
-# QEMU emulation for netduinoplus2
+# QEMU emulation (auto-detects machine from BOARD)
 .PHONY: qemu
 qemu: $(out)/$(PROJECT).bin
 	-killall -q qemu-system-arm
-	$(QEMU) -M netduinoplus2 -nographic -kernel $(out)/$(PROJECT).elf -serial mon:stdio
+ifeq ($(BOARD),b-l475e-iot01a)
+	$(QEMU) -M b-l475e-iot01a -nographic -semihosting -serial mon:stdio -kernel $(out)/$(PROJECT).elf
+else
+	@echo "Error: QEMU machine not defined for board '$(BOARD)'"
+	@echo "Supported boards: b-l475e-iot01a"
+	@exit 1
+endif
 
-# QEMU with GDB debugging
+# QEMU with GDB debugging (auto-detects machine from BOARD)
 # Terminal 1: make qemu-gdb
 # Terminal 2: make gdb-attach
 .PHONY: qemu-gdb
@@ -123,7 +129,12 @@ qemu-gdb: $(out)/$(PROJECT).bin
 	@echo "In another terminal, run: make gdb-attach"
 	@echo "Press Ctrl+C to exit"
 	-killall -q qemu-system-arm
-	$(QEMU) -M netduinoplus2 -nographic -kernel $(out)/$(PROJECT).elf -s -S
+ifeq ($(BOARD),b-l475e-iot01a)
+	$(QEMU) -M b-l475e-iot01a -nographic -semihosting -serial mon:stdio -kernel $(out)/$(PROJECT).elf -s -S
+else
+	@echo "Error: QEMU machine not defined for board '$(BOARD)'"
+	@exit 1
+endif
 
 .PHONY: gdb-attach
 gdb-attach: $(out)/$(PROJECT).elf

@@ -5,6 +5,7 @@
 
 #include <debug.h>
 #include <ktimer.h>
+#include <notification.h>
 #include <platform/irq.h>
 #include <sched.h>
 #include <softirq.h>
@@ -18,6 +19,11 @@
 tcb_t *idle;
 tcb_t *kernel;
 tcb_t *root;
+
+#ifdef CONFIG_KDB
+/* KDB notification bit - bit 30 reserved for KDB activation */
+#define KDB_NOTIFY_BIT (1UL << 30)
+#endif
 
 extern void root_thread(void);
 utcb_t root_utcb __KIP;
@@ -114,6 +120,22 @@ void set_kernel_state(thread_state_t state)
 static void kernel_thread(void)
 {
     while (1) {
+#ifdef CONFIG_KDB
+        /* Check for KDB activation notification from user space.
+         * KDB monitor thread posts KDB_NOTIFY_BIT via SYS_NOTIFY_POST
+         * when '?' key is pressed. Schedule KDB_SOFTIRQ to activate
+         * debugger.
+         */
+        if (kernel->notify_bits & KDB_NOTIFY_BIT) {
+            /* Clear notification bit atomically */
+            notification_clear(kernel, KDB_NOTIFY_BIT);
+
+            /* Schedule KDB softirq to activate debugger */
+            softirq_schedule(KDB_SOFTIRQ);
+
+            dbg_printf(DL_KDB, "KDB: Activation requested via notification\n");
+        }
+#endif
         /* If all softirqs processed, call SVC to
          * switch context immediately
          */

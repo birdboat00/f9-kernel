@@ -57,7 +57,11 @@ static mempool_t memmap[] = {
                       MPT_USER_TEXT),
     DECLARE_MEMPOOL_2("KIP",
                       kip,
-                      MP_KR | MP_KW | MP_UR | MP_SRAM,
+                      /* Root UTCB lives in the KIP section and must remain
+                       * writable from user mode even though the KIP payload
+                       * itself is logically read-mostly.
+                       */
+                      MP_KR | MP_KW | MP_UR | MP_UW | MP_SRAM,
                       MPT_KERNEL_DATA),
     DECLARE_MEMPOOL("KDATA",
                     &kip_end,
@@ -78,7 +82,7 @@ static mempool_t memmap[] = {
                       MPT_USER_DATA),
     DECLARE_MEMPOOL("MEM0",
                     &mem0_start,
-                    0x2001c000,
+                    0x20018000, /* SRAM1 end: 96KB */
                     MP_UR | MP_UW | MP_SRAM,
                     MPT_AVAILABLE),
 #ifdef CONFIG_BITMAP_BITBAND
@@ -262,14 +266,7 @@ void memory_init()
     int j = 0;
     uint32_t *shcsr = (uint32_t *) 0xE000ED24;
 
-    /* Verify and set STKALIGN for 8-byte stack alignment on exceptions.
-     * This is critical for Cortex-M: misaligned stacks cause HardFault.
-     * STKALIGN (bit 9 of CCR) ensures automatic 8-byte alignment.
-     */
-    if (!(*SCB_CCR & SCB_CCR_STKALIGN)) {
-        *SCB_CCR |= SCB_CCR_STKALIGN;
-        __ISB();
-    }
+    /* CCR already configured in start.c main() */
 
     fpages_init();
 
@@ -385,7 +382,7 @@ void as_setup_mpu(as_t *as,
     }
 
     /* Prevent link to stack pages */
-    for (fp = as->mpu_first; i < 8 && fp; fp = fp->mpu_next) {
+    for (fp = as->mpu_first; i < 7 && fp; fp = fp->mpu_next) {
         for (j = 0; j < mpu_first_i; j++) {
             if (fp == mpu[j]) {
                 break;
@@ -421,6 +418,10 @@ void as_setup_mpu(as_t *as,
     for (; j < 8; ++j) {
         mpu_setup_region(j, NULL);
     }
+
+    /* Memory barriers required after MPU configuration changes */
+    __asm__ __volatile__("dsb" ::: "memory");
+    __asm__ __volatile__("isb" ::: "memory");
 }
 
 void as_map_user(as_t *as)

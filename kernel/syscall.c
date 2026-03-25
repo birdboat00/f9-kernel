@@ -241,7 +241,12 @@ static void sys_thread_control(uint32_t *param1, uint32_t *param2)
             return;
         }
         thread_space(thr, space, utcb);
-        thr->utcb->t_pager = pager;
+        thr->t_pager = pager;
+        if (!caller || thread_ispriviliged(caller)) {
+            thr->utcb->t_pager = pager;
+        } else {
+            thr->utcb_needs_sync = 1;
+        }
         param1[REG_R0] = 1;
     } else {
         /* Removal of thread */
@@ -551,7 +556,6 @@ void syscall_handler()
         sched_enqueue(caller);
     } else if (svc_num == SYS_IPC) {
         sys_ipc(svc_param1);
-        dbg_printf(DL_KDB, "SYSCALL: sys_ipc returned\n");
     } else {
         dbg_printf(DL_SYSCALL, "SVC: %d called [%d, %d, %d, %d]\n", svc_num,
                    svc_param1[REG_R0], svc_param1[REG_R1], svc_param1[REG_R2],

@@ -3,6 +3,7 @@
  * found in the LICENSE file.
  */
 #include <platform/link.h>
+#include <types.h>
 #include "lib/string.h"
 
 enum SEMIHOST_SYSCALL {
@@ -80,3 +81,15 @@ int __USER_TEXT semihost_puts(char *log)
     semihost_close(handle);
     return 0;
 }
+
+/* Semihosting character input for KDB monitor.
+ * Blocks until character available (ARM semihosting limitation).
+ */
+uint8_t __USER_TEXT semihosting_getc(void)
+{
+    return (uint8_t) semihost_call(SYS_READC, NULL);
+}
+
+/* Note: kernel-space __l4_putchar is in platform/semihosting.c.
+ * User-space printf() uses IPC to THREAD_LOG, not __l4_putchar.
+ */

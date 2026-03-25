@@ -12,13 +12,16 @@
 #ifdef CONFIG_DEBUG_DEV_UART
 #include <platform/debug_uart.h>
 #endif
+#ifdef CONFIG_DEBUG_DEV_SEMIHOSTING
+#include <platform/debug_semihosting.h>
+#endif
 #ifdef CONFIG_DEBUG_DEV_RAM
 #include <platform/debug_ram.h>
 #endif
 
 #ifdef DEBUG_DEVICE_EXIST
 static dbg_dev_t dbg_dev[DBG_DEV_MAX];
-static dbg_dev_t *cur_dev = &dbg_dev[0];
+dbg_dev_t *cur_dev = &dbg_dev[0];
 
 static uint8_t default_getchar(void)
 {
@@ -27,10 +30,13 @@ static uint8_t default_getchar(void)
 
 static void default_putchar(uint8_t chr)
 {
-    chr = 0;
+    (void) chr;
 }
 
 static void default_start_panic(void) {}
+
+/* Debug output state: async (buffered) or panic (synchronous) */
+enum { DBG_ASYNC, DBG_PANIC } dbg_state = DBG_ASYNC;
 
 /*
  * Receive a character from debug port
@@ -45,7 +51,13 @@ uint8_t dbg_getchar(void)
  */
 void dbg_putchar(uint8_t chr)
 {
+#ifdef CONFIG_DEBUG_DEV_SEMIHOSTING
+    /* Semihosting: call directly to avoid device layer complexity */
+    extern void semihosting_putc(uint8_t c);
+    semihosting_putc(chr);
+#else
     (*cur_dev->putchar)(chr);
+#endif
 }
 
 /*
@@ -76,6 +88,16 @@ static void dbg_device_init(void)
 
 #ifdef CONFIG_DEBUG_DEV_UART
     dbg_uart_init();
+#endif
+
+#ifdef CONFIG_DEBUG_DEV_SEMIHOSTING
+    dbg_semihosting_init();
+#endif
+
+#ifdef CONFIG_KDB_UART_INPUT
+    /* UART RX for KDB input alongside semihosting output */
+    extern void kdb_uart_input_init(void);
+    kdb_uart_input_init();
 #endif
 
 #ifdef CONFIG_DEBUG_DEV_RAM
@@ -124,7 +146,7 @@ uint8_t dbg_getchar(void)
 
 void dbg_putchar(uint8_t chr)
 {
-    chr = 0;
+    (void) chr;
 }
 
 void dbg_start_panic(void) {}

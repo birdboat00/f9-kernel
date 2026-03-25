@@ -35,6 +35,41 @@ void hard_fault_handler(void)
      * preemption, then processor escalates the exception priority to
      * HardFault.
      */
+    volatile uint32_t *cfsr =
+        (uint32_t *) 0xE000ED28; /* Configurable Fault Status */
+    volatile uint32_t *hfsr = (uint32_t *) 0xE000ED2C; /* HardFault Status */
+    volatile uint32_t *mmfar =
+        (uint32_t *) 0xE000ED34; /* MemManage Fault Address */
+    volatile uint32_t *bfar = (uint32_t *) 0xE000ED38; /* BusFault Address */
+
+    /* Get faulting context from exception stack frame.
+     * EXC_RETURN bit 2 determines which stack pointer was active:
+     *   bit 2 = 0: MSP (handler mode fault)
+     *   bit 2 = 1: PSP (thread mode fault)
+     */
+    uint32_t exc_lr;
+    __asm__ __volatile__("mov %0, lr" : "=r"(exc_lr));
+
+    uint32_t sp_val;
+    if (exc_lr & 0x4) {
+        __asm__ __volatile__("mrs %0, psp" : "=r"(sp_val));
+    } else {
+        __asm__ __volatile__("mrs %0, msp" : "=r"(sp_val));
+    }
+    uint32_t *frame = (uint32_t *) sp_val;
+    uint32_t fault_pc = frame[6];
+    uint32_t fault_lr = frame[5];
+    uint32_t fault_r12 = frame[4];
+    uint16_t *inst = (uint16_t *) (fault_pc & ~1);
+
+    dbg_printf(DL_KDB, "HARD FAULT: CFSR=%p HFSR=%p MMFAR=%p BFAR=%p\n", *cfsr,
+               *hfsr, *mmfar, *bfar);
+    dbg_printf(DL_KDB, "FAULT frame on %s: PC=%p LR=%p R12=%p inst=%04x\n",
+               (exc_lr & 0x4) ? "PSP" : "MSP", fault_pc, fault_lr, fault_r12,
+               inst[0]);
+    dbg_printf(DL_KDB, "FAULT R0=%p R1=%p R2=%p R3=%p\n", frame[0], frame[1],
+               frame[2], frame[3]);
+
     panic("Kernel panic: Hard fault. Restarting\n");
 }
 

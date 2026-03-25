@@ -33,7 +33,7 @@ void test_arm_lazy_fpu(void)
 {
     TEST_RUN("arm_lazy_fpu");
 
-#ifdef CONFIG_HAS_FPU
+#ifdef CONFIG_FPU
     volatile float a = 1.5f;
     volatile float b = 2.5f;
     volatile float c = a + b;

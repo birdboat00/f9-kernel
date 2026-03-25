@@ -1,13 +1,13 @@
-/* Copyright (c) 2014 The F9 Microkernel Project. All rights reserved.
+/* Copyright (c) 2013 The F9 Microkernel Project. All rights reserved.
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
 
-#ifndef PLATFORM_STM32F1_USART_H_
-#define PLATFORM_STM32F1_USART_H_
+#ifndef PLATFORM_STM32F4_USART_H_
+#define PLATFORM_STM32F4_USART_H_
 
-#include <platform/stm32f1/gpio.h>
-#include <platform/stm32f1/registers.h>
+#include <platform/stm32l4/gpio.h>
+#include <platform/stm32l4/registers.h>
 
 struct usart_dev {
     uint32_t u_num;
@@ -19,7 +19,7 @@ struct usart_dev {
     struct gpio_cfg rx;
 };
 
-#define USART_NUM 3
+#define USART_NUM 6
 
 /* status bit */
 #define USART_CTS ((uint16_t) (0x1 << 9))
@@ -34,9 +34,10 @@ struct usart_dev {
 #define USART_PE ((uint16_t) (0x1 << 0))
 
 
-#define USART_IT_CR1 (0xc << 8)
-#define USART_IT_CR2 (0x10 << 8)
-#define USART_IT_CR3 (0x14 << 8)
+/* L4 USART CR register offsets from base (different from F4) */
+#define USART_IT_CR1 (0x00 << 8)
+#define USART_IT_CR2 (0x04 << 8)
+#define USART_IT_CR3 (0x08 << 8)
 
 #define USART_IT_PE ((uint16_t) USART_IT_CR1 | 0x8)
 #define USART_IT_TXE ((uint16_t) USART_IT_CR1 | 0x7)
@@ -59,4 +60,4 @@ void usart_config_interrupt(struct usart_dev *usart,
                             uint16_t it,
                             uint8_t state);
 
-#endif /* PLATFORM_STM32F1_USART_H_ */
+#endif /* PLATFORM_STM32F4_USART_H_ */

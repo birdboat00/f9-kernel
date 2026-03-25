@@ -8,12 +8,21 @@
 #include <l4/pager.h>
 #include <l4/utcb.h>
 #include <l4io.h>
+#include <platform/armv7m.h>
+#include <platform/link.h>
 
 /* POSIX error codes for pager join protocol */
 #define ESRCH 3   /* No such process/thread */
 #define EAGAIN 11 /* Resource temporarily unavailable */
 
+/* Pager-managed child threads are sized from RES_FPAGE. Keep this compact so
+ * the default 8 KiB pool can still create worker threads.
+ */
 #define STACK_SIZE 0x200
+#define STACK_CANARY_VALUE 0xDEADBEEF
+#define PAGER_BOOT_RESERVED                                        \
+    (((UTCB_SIZE + PAGER_BOOTSTRAP_STACK_SIZE) + NODE_ALIGN - 1) & \
+     ~(NODE_ALIGN - 1))
 
 /* Kernel requires 256-byte alignment for UTCB addresses */
 #define NODE_ALIGN 256
@@ -49,6 +58,12 @@ struct thread_pool {
     L4_Word_t node_num;
     L4_ThreadId_t pager_tid;
 };
+
+/* Keep pager metadata in user BSS so bootstrap does not depend on an extra
+ * demand-mapped heap fpage before the pager can start serving faults itself.
+ */
+static struct thread_pool pager_pool_storage __USER_BSS;
+static struct thread_node pager_node_storage[THREAD_MAX_NUM] __USER_BSS;
 
 /* Wait queue for blocking synchronization (PSE51 compliance) */
 #define MAX_WAITERS 16
@@ -165,7 +180,8 @@ static inline L4_Word_t user_fpage_number(user_fpage_t *fpages)
 }
 
 __USER_TEXT
-static struct thread_pool *init_thread_pool(L4_Word_t res_base,
+static struct thread_pool *init_thread_pool(L4_Word_t pager_tid_raw,
+                                            L4_Word_t res_base,
                                             L4_Word_t res_size,
                                             L4_Word_t heap_base,
                                             L4_Word_t heap_size)
@@ -175,19 +191,25 @@ static struct thread_pool *init_thread_pool(L4_Word_t res_base,
     struct thread_pool *pool;
     struct thread_node *nodes;
 
-    num1 =
-        (heap_size - sizeof(struct thread_pool)) / sizeof(struct thread_node);
+    (void) heap_base;
+    (void) heap_size;
+
+    if (res_size <= PAGER_BOOT_RESERVED)
+        return NULL;
+
+    res_base += PAGER_BOOT_RESERVED;
+    res_size -= PAGER_BOOT_RESERVED;
+
+    num1 = THREAD_MAX_NUM;
     num2 = (res_size) / NODE_SIZE_ALIGNED;
-
     node_num = (num1 < num2) ? num1 : num2;
-    node_num = (node_num > THREAD_MAX_NUM) ? THREAD_MAX_NUM : node_num;
 
-    pool = (struct thread_pool *) heap_base;
-    nodes = (struct thread_node *) (heap_base + sizeof(struct thread_pool));
+    pool = &pager_pool_storage;
+    nodes = pager_node_storage;
 
     pool->node_num = node_num;
     pool->all_nodes = nodes;
-    pool->pager_tid = L4_MyGlobalId();
+    pool->pager_tid.raw = pager_tid_raw;
 
     if (res_base & 0x1) {
         printf("unalign res base\n");
@@ -304,6 +326,23 @@ static void start_thread(L4_ThreadId_t t,
                          L4_Word_t stack_size)
 {
     L4_Msg_t msg;
+    volatile L4_Word_t *frame = (volatile L4_Word_t *) (sp - RESERVED_STACK);
+    volatile L4_Word_t *stack_base = (volatile L4_Word_t *) (sp - stack_size);
+    L4_Word_t *utcb = (L4_Word_t *) (sp - STACK_SIZE - UTCB_SIZE);
+    L4_Word_t kip = (L4_Word_t) L4_KernelInterface(NULL, NULL, NULL);
+
+    /* Pager-managed children share our RES_FPAGE, so prepare the initial
+     * exception frame in user space and let the kernel only bind ctx.sp.
+     */
+    *stack_base = STACK_CANARY_VALUE;
+    frame[REG_R0] = kip;
+    frame[REG_R1] = (L4_Word_t) utcb;
+    frame[REG_R2] = entry;
+    frame[REG_R3] = entry_arg;
+    frame[REG_R12] = 0;
+    frame[REG_LR] = 0xFFFFFFFF;
+    frame[REG_PC] = (L4_Word_t) thread_container;
+    frame[REG_xPSR] = 0x1000000;
 
     /* CRITICAL: Do NOT call functions after L4_MsgLoad!
      * Any function call (including printf) will clobber R4-R11 (MR0-MR7)!
@@ -341,7 +380,7 @@ static L4_ThreadId_t __thread_create(struct thread_pool *pool)
     node->detached = 0;
     use_thread_node(node);
 
-    myself = L4_MyGlobalId();
+    myself = pool->pager_tid;
     free_mem = (L4_Word_t) THREAD_NODE_BASE(node);
 
     /* Create thread with shared address space (spaceid=myself).
@@ -538,9 +577,15 @@ void pager_thread(user_struct *user, void *(*entry_main)(void *) )
         return;
     }
 
-    pool = init_thread_pool(
-        user->fpages[RES_FPAGE].base, user->fpages[RES_FPAGE].size,
-        user->fpages[HEAP_FPAGE].base, user->fpages[HEAP_FPAGE].size);
+    pool = init_thread_pool(user->thread_num, user->fpages[RES_FPAGE].base,
+                            user->fpages[RES_FPAGE].size,
+                            user->fpages[HEAP_FPAGE].base,
+                            user->fpages[HEAP_FPAGE].size);
+
+    if (!pool) {
+        printf("pager: init_thread_pool failed\n");
+        return;
+    }
 
     /* Create main entry thread */
     main_tid = __thread_create(pool);

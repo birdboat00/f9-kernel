@@ -132,9 +132,9 @@ __attribute__((noinline)) static void stack_consumer(void)
 /*
  * Directly corrupt the canary.
  * Search the entire stack region for the canary value.
- * Stack size is 2048 bytes (defined in main.c DECLARE_USER).
+ * Pager-created worker threads use a 512-byte stack.
  */
-#define STACK_SIZE_WORDS (2048 / sizeof(uint32_t))
+#define STACK_SIZE_WORDS (512 / sizeof(uint32_t))
 
 __USER_TEXT
 static void corrupt_canary_directly(void)

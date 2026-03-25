@@ -22,31 +22,37 @@ config BOARD_STM32F429DISCOVERY
 	help
 	  STM32F429 Discovery board with STM32F429ZIT6 MCU and LCD.
 
-config BOARD_NETDUINOPLUS2
-	bool "Netduino Plus 2"
-	select PLATFORM_STM32F4
-	help
-	  Netduino Plus 2 board with STM32F405RGT6 MCU.
-	  This board is supported by upstream QEMU for emulation.
-
 config BOARD_STM32F429NUCLEO
 	bool "STM32F429 Nucleo"
 	select PLATFORM_STM32F429
 	help
 	  STM32F429 Nucleo board with STM32F429ZIT6 MCU.
 
+config BOARD_B_L475E_IOT01A
+	bool "B-L475E-IOT01A Discovery"
+	select PLATFORM_STM32L4
+	select QEMU
+	help
+	  STMicroelectronics B-L475E-IOT01A Discovery board with STM32L475VG MCU.
+	  Includes Cortex-M4F with FPU, MPU, and full QEMU support with FPU emulation.
+	  QEMU mode is automatically enabled for this board.
+
+	  QEMU command:
+	  qemu-system-arm -M b-l475e-iot01a -nographic -kernel build/b-l475e-iot01a/f9.elf
+
 endchoice
 
 config QEMU
-	bool "QEMU emulation mode"
-	default y if BOARD_NETDUINOPLUS2
+	bool "QEMU emulation mode" if !BOARD_B_L475E_IOT01A
 	help
 	  Enable workarounds for QEMU emulation limitations:
-	  - Use synchronous UART output (QEMU TXE interrupt unreliable)
-	  - Place bitmaps in regular SRAM (QEMU lacks CCM RAM emulation)
+	  - Use semihosting for console I/O (reliable in QEMU)
+	  - Use synchronous UART output if UART is selected
 
 	  Enable this when running under QEMU. Disable for real hardware
 	  to get better performance.
+
+	  Note: Automatically enabled and mandatory for B-L475E-IOT01A board.
 
 # Hardware feature availability flags
 # These control which ARM architecture tests can run based on
@@ -65,29 +71,6 @@ config HAS_PRECISE_TIMING
 
 	  Disabled in QEMU because timing is not cycle-accurate.
 
-config MPU_MOCK
-	bool "Software MPU mock for testing"
-	depends on QEMU
-	default y if QEMU
-	help
-	  Enable minimal MPU register mock for test_arm_mpu_config in QEMU.
-
-	  Returns MPU_TYPE = 0x800 (8 regions, unified) to validate that
-	  MPU_TYPE register is readable without QEMU hanging.
-
-	  For full MPU validation, test on real hardware with actual MPU.
-
-config SCB_MOCK
-	bool "Software SCB mock for testing"
-	depends on QEMU
-	default y if QEMU
-	help
-	  Enable minimal SCB register mock for test_arm_unaligned in QEMU.
-
-	  Returns SCB_CCR = 0x200 (STKALIGN enabled, UNALIGN_TRP disabled)
-	  to validate SCB_CCR register readability without QEMU hanging.
-
-	  For full SCB validation, test on real hardware with actual SCB.
 
 endmenu
 
@@ -96,4 +79,7 @@ config PLATFORM_STM32F4
 	bool
 
 config PLATFORM_STM32F429
+	bool
+
+config PLATFORM_STM32L4
 	bool

@@ -99,7 +99,6 @@ static inline void do_ipc_error(tcb_t *from,
     to->state = to_state;
 }
 
-
 static void do_ipc(tcb_t *from, tcb_t *to)
 {
     ipc_typed_item typed_item;
@@ -202,17 +201,6 @@ static void do_ipc(tcb_t *from, tcb_t *to)
         return;
     }
 
-    to->utcb->sender = from->t_globalid;
-
-    /* Conditionally boost receiver priority for IPC fast path.
-     * Only boost if receiver was waiting for ANY message (ipc_from ==
-     * ANYTHREAD). If waiting for a specific reply, skip boost - thread was just
-     * processing an IPC and will return to user code immediately after
-     * receiving reply.
-     *
-     * This prevents priority inversion where reply receivers accumulate
-     * priority 3 and starve lower-priority threads indefinitely.
-     */
     /* Write receiver's R0 (sender ID) and UTCB sender BEFORE making runnable.
      * If enqueue happens first and scheduler runs preemptively,
      * receiver could see stale R0 value.
@@ -326,7 +314,7 @@ uint32_t ipc_timeout(void *data)
     ktimer_event_t *event = (ktimer_event_t *) data;
     tcb_t *thr = (tcb_t *) event->data;
 
-    dbg_printf(DL_KDB, "IPC: timeout tid=%t st=%d\n", thr->t_globalid,
+    dbg_printf(DL_IPC, "IPC: timeout tid=%t st=%d\n", thr->t_globalid,
                thr->state);
 
     if (thr->timeout_event == (uint32_t) data) {
@@ -354,7 +342,7 @@ static void sys_ipc_timeout(uint32_t timeout)
 
     kevent = ktimer_event_create(ticks, ipc_timeout, caller);
 
-    dbg_printf(DL_KDB, "IPC: sched timeout ticks=%d ev=%p\n", ticks, kevent);
+    dbg_printf(DL_IPC, "IPC: sched timeout ticks=%d ev=%p\n", ticks, kevent);
 
     caller->timeout_event = (uint32_t) kevent;
 }
@@ -366,11 +354,11 @@ void sys_ipc(uint32_t *param1)
     l4_thread_t to_tid = param1[REG_R0], from_tid = param1[REG_R1];
     uint32_t timeout = param1[REG_R2];
 
-    dbg_printf(DL_KDB, "IPC: %t->%t from=%t timeout=%p\n", caller->t_globalid,
+    dbg_printf(DL_IPC, "IPC: %t->%t from=%t timeout=%p\n", caller->t_globalid,
                to_tid, from_tid, timeout);
 
     if (to_tid == L4_NILTHREAD && from_tid == L4_NILTHREAD) {
-        dbg_printf(DL_KDB, "IPC: sleep tid=%t timeout=%p\n", caller->t_globalid,
+        dbg_printf(DL_IPC, "IPC: sleep tid=%t timeout=%p\n", caller->t_globalid,
                    timeout);
         caller->state = T_INACTIVE;
         if (timeout)
@@ -395,18 +383,16 @@ void sys_ipc(uint32_t *param1)
             do_ipc(caller, to_thr);
             return;
         } else if (to_thr && to_thr->state == T_INACTIVE && to_thr->utcb &&
-                   GLOBALID_TO_TID(to_thr->utcb->t_pager) ==
+                   GLOBALID_TO_TID(to_thr->t_pager) ==
                        GLOBALID_TO_TID(caller->t_globalid)) {
-            dbg_printf(DL_KDB,
-                       "IPC: INACTIVE thread %t accepted (pager match)\n",
-                       to_tid);
-            uint32_t tag = ipc_read_mr(caller, 0);
-            dbg_printf(DL_KDB, "IPC: startup tag=%p\n", tag);
-            if (tag == 0x00000005) {
-                /* Thread start protocol from pager:
-                 * mr1: thread_container (wrapper), mr2: sp,
-                 * mr3: stack size, mr4: entry point, mr5: entry arg */
+            /* Read tag - should be 0x00000005 (u=5, t=0) for thread start */
+            ipc_msg_tag_t tag_struct;
+            tag_struct.raw = ipc_read_mr(caller, 0);
 
+            /* Thread start protocol: Tag must be 0x05 (u=5, t=0)
+             * MR1=container, MR2=sp, MR3=stack_size, MR4=entry, MR5=arg
+             * Other tags (like 0x80 for maps) go to the else branch below */
+            if (tag_struct.s.n_untyped == 5 && tag_struct.s.n_typed == 0) {
                 uint32_t mr1_container = ipc_read_mr(caller, 1);
                 memptr_t sp = ipc_read_mr(caller, 2);
                 size_t stack_size = ipc_read_mr(caller, 3);
@@ -414,21 +400,10 @@ void sys_ipc(uint32_t *param1)
                 uint32_t entry_arg = ipc_read_mr(caller, 5);
                 uint32_t regs[4]; /* r0, r1, r2, r3 */
 
-                dbg_printf(DL_KDB,
-                           "IPC: start sp=%p size=%p entry=%p container=%p\n",
-                           sp, stack_size, entry_point, mr1_container);
-
                 /* Security check: Ensure stack is in user-writable memory */
                 int pid = mempool_search(sp - stack_size, stack_size);
                 mempool_t *mp = mempool_getbyid(pid);
-
-                dbg_printf(DL_KDB, "IPC: mempool pid=%d mp=%p\n", pid, mp);
-
                 if (!mp || !(mp->flags & MP_UW)) {
-                    dbg_printf(
-                        DL_KDB,
-                        "IPC: REJECT invalid stack for %t: %p (pool %s)\n",
-                        to_tid, sp - stack_size, mp ? mp->name : "N/A");
                     user_ipc_error(caller, UE_IPC_ABORTED | UE_IPC_PHASE_SEND);
                     thread_make_runnable(caller);
                     return;
@@ -436,32 +411,30 @@ void sys_ipc(uint32_t *param1)
 
                 to_thr->stack_base = sp - stack_size;
                 to_thr->stack_size = stack_size;
-                thread_init_canary(to_thr);
-
-                dbg_printf(DL_KDB, "IPC: %t stack_base:%p stack_size:%p\n",
-                           to_tid, to_thr->stack_base, to_thr->stack_size);
+                if (!caller || thread_ispriviliged(caller)) {
+                    thread_init_canary(to_thr);
+                } else {
+                    to_thr->stack_canary_needs_init = 1;
+                }
 
                 regs[REG_R0] = (uint32_t) &kip;
                 regs[REG_R1] = (uint32_t) to_thr->utcb;
                 regs[REG_R2] =
                     entry_point; /* Actual entry passed to container */
                 regs[REG_R3] = entry_arg;
-
-                dbg_printf(DL_KDB, "IPC: calling thread_init_ctx\n");
-                thread_init_ctx((void *) sp, (void *) mr1_container, regs,
-                                to_thr);
-                dbg_printf(DL_KDB, "IPC: thread_init_ctx done\n");
-
-                dbg_printf(DL_KDB, "IPC: making caller %t runnable\n",
-                           caller->t_globalid);
+                if (!caller || thread_ispriviliged(caller)) {
+                    if (caller->as)
+                        mpu_select_lru(caller->as, sp - RESERVED_STACK);
+                    *((uint32_t *) (sp - RESERVED_STACK)) = 0;
+                    thread_init_ctx((void *) sp, (void *) mr1_container, regs,
+                                    to_thr);
+                } else {
+                    thread_init_prebuilt_ctx((void *) sp, to_thr);
+                }
                 thread_make_runnable(caller);
 
                 /* Start thread */
-                dbg_printf(DL_KDB, "IPC: making to_thr %t runnable\n",
-                           to_thr->t_globalid);
                 thread_make_runnable(to_thr);
-
-                dbg_printf(DL_KDB, "IPC: startup complete for %t\n", to_tid);
                 return;
             } else {
                 /* Non-start IPC to INACTIVE thread: process
@@ -484,9 +457,6 @@ void sys_ipc(uint32_t *param1)
                     return;
                 }
 
-                dbg_printf(DL_IPC, "IPC: %t to INACTIVE %t (non-start)\n",
-                           caller->t_globalid, to_thr->t_globalid);
-
                 /* Process typed items (MapItems only) */
                 for (int typed_idx = untyped_last; typed_idx < typed_last;
                      ++typed_idx) {
@@ -498,29 +468,18 @@ void sys_ipc(uint32_t *param1)
                     } else if (typed_item.s.header & IPC_TI_MAP_GRANT) {
                         memptr_t map_base = typed_item.raw & 0xFFFFFFC0;
                         memptr_t map_size = mr_data & 0xFFFFFFC0;
-                        int ret;
 
                         /* S1 fix: reject unaligned addresses */
                         if (!addr_is_fpage_aligned(map_base)) {
-                            dbg_printf(
-                                DL_IPC,
-                                "IPC: REJECT unaligned map to INACTIVE %p\n",
-                                map_base);
                             thread_make_runnable(caller);
                             return;
                         }
 
-                        ret = map_area(
+                        map_area(
                             caller->as, to_thr->as, map_base, map_size,
                             (typed_item.s.header & IPC_TI_GRANT) ? GRANT : MAP,
                             thread_ispriviliged(caller));
                         typed_item_idx = -1;
-
-                        if (ret < 0) {
-                            dbg_printf(DL_IPC,
-                                       "IPC: map to INACTIVE failed: %d\n",
-                                       ret);
-                        }
                     }
                 }
 
@@ -544,17 +503,9 @@ void sys_ipc(uint32_t *param1)
 
             if (to_thr->state == T_INACTIVE && !timeout) {
                 /* T_INACTIVE thread with no timeout - would block forever */
-                dbg_printf(DL_IPC, "IPC: %t send to INACTIVE %t (no timeout)\n",
-                           caller->t_globalid, to_tid);
-                if (to_thr->utcb) {
-                    dbg_printf(
-                        DL_IPC,
-                        "IPC: INACTIVE reject: caller=%t pager=%t utcb=%p\n",
-                        caller->t_globalid, to_thr->utcb->t_pager,
-                        to_thr->utcb);
-                } else {
-                    dbg_printf(DL_IPC, "IPC: INACTIVE reject: utcb=NULL\n");
-                }
+                dbg_printf(DL_IPC,
+                           "IPC: %t send to INACTIVE %t rejected (utcb=%p)\n",
+                           caller->t_globalid, to_tid, to_thr->utcb);
                 user_ipc_error(caller, UE_IPC_ABORTED | UE_IPC_PHASE_SEND);
                 thread_make_runnable(caller);
                 return;

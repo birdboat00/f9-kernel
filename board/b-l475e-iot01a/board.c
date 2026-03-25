@@ -4,11 +4,11 @@
  */
 
 #include "board.h"
-#include <platform/stm32f4/gpio.h>
-#include <platform/stm32f4/usart.h>
+#include <platform/stm32l4/gpio.h>
+#include <platform/stm32l4/usart.h>
 
 struct usart_dev console_uart = {
-    .u_num = 2,
+    .u_num = 1,
     .baud = 115200,
     BOARD_USART_CONFIGS.tx =
         {

@@ -11,6 +11,7 @@
 
 
 #define THREAD_MAX_NUM 32
+#define PAGER_BOOTSTRAP_STACK_SIZE 0x800
 
 /* msg tag label */
 #define PAGER_REQUEST_LABEL 0xf000

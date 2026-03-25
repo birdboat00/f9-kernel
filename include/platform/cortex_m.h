@@ -228,6 +228,9 @@ inline void __ISB(void)
 
 #define SCB_CCR_STKALIGN \
     (uint32_t) (1 << 9) /* Stack 8-byte alignment on exception entry */
+#define SCB_CCR_UNALIGN_TRP                           \
+    (uint32_t) (1 << 3) /* Trap on unaligned accesses \
+                         */
 
 #define SCB_SHCSR_MEMFAULTENA \
     (uint32_t) (1 << 16) /* Enables Memory Management Fault */

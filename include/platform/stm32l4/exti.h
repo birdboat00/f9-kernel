@@ -1,8 +1,8 @@
-#ifndef PLATFORM_STM32F1_EXTI_H_
-#define PLATFORM_STM32F1_EXTI_H_
+#ifndef PLATFORM_STM32L4_EXTI_H_
+#define PLATFORM_STM32L4_EXTI_H_
 
-#include <platform/stm32f1/gpio.h>
-#include <platform/stm32f1/registers.h>
+#include <platform/stm32l4/gpio.h>
+#include <platform/stm32l4/registers.h>
 
 /* EXTI mode */
 #define EXTI_INTERRUPT_MODE 0x0

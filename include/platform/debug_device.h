@@ -8,8 +8,9 @@
 #include <debug.h>
 #include <types.h>
 
-#if defined(CONFIG_DEBUG) && \
-    (defined(CONFIG_DEBUG_DEV_UART) || defined(CONFIG_DEBUG_DEV_RAM))
+#if defined(CONFIG_DEBUG) &&                                            \
+    (defined(CONFIG_DEBUG_DEV_UART) || defined(CONFIG_DEBUG_DEV_RAM) || \
+     defined(CONFIG_DEBUG_DEV_SEMIHOSTING))
 
 #define DEBUG_DEVICE_EXIST
 #endif
@@ -20,6 +21,9 @@
 typedef enum {
 #ifdef CONFIG_DEBUG_DEV_UART
     DBG_DEV_UART,
+#endif
+#ifdef CONFIG_DEBUG_DEV_SEMIHOSTING
+    DBG_DEV_SEMIHOSTING,
 #endif
 #ifdef CONFIG_DEBUG_DEV_RAM
     DBG_DEV_RAM,

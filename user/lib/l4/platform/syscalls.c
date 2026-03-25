@@ -125,67 +125,70 @@ L4_Word_t L4_TimerNotify(L4_Word_t ticks,
 }
 
 __USER_TEXT
-L4_MsgTag_t L4_Ipc(L4_ThreadId_t to,
-                   L4_ThreadId_t FromSpecifier,
-                   L4_Word_t Timeouts,
-                   L4_ThreadId_t *from)
+__attribute__((naked)) L4_MsgTag_t L4_Ipc(L4_ThreadId_t to,
+                                          L4_ThreadId_t FromSpecifier,
+                                          L4_Word_t Timeouts,
+                                          L4_ThreadId_t *from)
 {
-    L4_MsgTag_t result;
-    extern void *current_utcb;
-    utcb_t *utcb = (utcb_t *) current_utcb;
-    L4_Word_t *mr_ptr = &utcb->mr_low[0];
-
-    register L4_Word_t r0 __asm__("r0") = to.raw;
-    register L4_Word_t r1 __asm__("r1") = FromSpecifier.raw;
-    register L4_Word_t r2 __asm__("r2") = Timeouts;
-
-    /* B8 Fix: MRs stored in UTCB->mr_low[], marshaled to R4-R11 for SVC
+    /* Naked function - we manage the stack ourselves to prevent the compiler
+     * from storing locals that would be overwritten by the SVC exception frame.
      *
-     * The ARM ABI says R4-R11 are callee-saved, so any function call
-     * between L4_LoadMR() and L4_Ipc() could corrupt them. We now store
-     * MRs in UTCB memory (mr_low[]) and marshal here.
+     * Parameters in registers (ARM AAPCS):
+     * R0 = to.raw
+     * R1 = FromSpecifier.raw
+     * R2 = Timeouts
+     * R3 = from (pointer)
      *
-     * P1 Fix: Use r12 as base register for ldmia/stmia. ARM reference:
-     * "If <Rn> is in the register list, behavior is UNPREDICTABLE."
-     * By explicitly using r12 (outside r4-r11), we avoid this hazard.
-     * We save mr_ptr to stack because SVC may clobber r0-r3 where the
-     * compiler might have placed it.
+     * Return value in R0 = MsgTag.raw
      *
-     * Register usage during SVC:
-     * - R0-R3: IPC parameters (to, from, timeout)
-     * - R4-R11: Message registers (loaded from UTCB before SVC)
-     * - R12: Scratch register for ldmia/stmia base
-     *
-     * NOTE: The SVC handler saves R4-R11 to __irq_saved_regs on entry
-     * and restores them on exit. For blocking IPC, received MRs are
-     * delivered via context switch (ctx.regs[]). For non-blocking,
-     * sender gets original MRs back (no reply expected).
+     * CRITICAL: Must preserve callee-saved registers R4-R11 per AAPCS.
      */
     __asm__ __volatile__(
-        /* Save mr_ptr to stack (SVC may clobber the input register) */
-        "mov r12, %[mr_ptr]\n"
-        "push {r4-r11}\n"
-        "sub sp, sp, #8\n"
-        "str r12, [sp, #4]\n"
+        /* Save callee-saved registers R4-R11 and R3 (from pointer), LR */
+        "push {r3-r11, lr}\n"
+
         /* Load MR0-MR7 from UTCB into R4-R11 */
+        "ldr r12, =current_utcb\n"
+        "ldr r12, [r12]\n"    /* r12 = utcb */
+        "add r12, r12, #48\n" /* r12 = &utcb->mr_low[0] */
         "ldmia r12, {r4-r11}\n"
-        /* SVC call with MRs in r4-r11 */
+
+        /* SVC syscall - exception frame saves R0-R3, R12, LR, PC, xPSR */
+        /* Kernel preserves R4-R11 across syscall */
         "svc %[syscall_num]\n"
-        /* Restore mr_ptr and store received MRs back to UTCB */
-        "ldr r12, [sp, #4]\n"
+
+        /* Reload UTCB MR pointer and store received MRs.
+         * LR was restored to caller's return address by the exception
+         * frame -- it no longer holds the UTCB pointer.
+         */
+        "ldr r12, =current_utcb\n"
+        "ldr r12, [r12]\n"
+        "add r12, r12, #48\n" /* r12 = &utcb->mr_low[0] */
         "stmia r12, {r4-r11}\n"
-        "add sp, sp, #8\n"
-        "pop {r4-r11}\n"
-        : "+r"(r0)
-        : "r"(r1), "r"(r2), [mr_ptr] "r"(mr_ptr), [syscall_num] "i"(SYS_IPC)
-        : "r12", "memory");
 
-    result.raw = utcb->mr_low[0]; /* MR0 = tag */
+        /* Restore callee-saved registers (including original R3 with 'from'
+           pointer) */
+        "pop {r3-r11, lr}\n"
 
-    if (from)
-        from->raw = r0;
+        /* Load return value: MR0 = tag (utcb->mr_low[0]) */
+        "ldr r12, =current_utcb\n"
+        "ldr r12, [r12]\n"
+        "ldr r1, [r12, #48]\n"
 
-    return result;
+        /* Store 'from' result if pointer is non-NULL AND aligned */
+        "cmp r3, #0\n"
+        "beq 1f\n"       /* Skip if NULL */
+        "tst r3, #3\n"   /* Check 4-byte alignment */
+        "bne 1f\n"       /* Skip if misaligned */
+        "str r0, [r3]\n" /* *from = R0 (from kernel) */
+        "1:\n"
+
+        /* Return tag in R0 */
+        "mov r0, r1\n"
+        "bx lr\n"
+        :
+        : [syscall_num] "i"(SYS_IPC)
+        : "memory");
 }
 
 

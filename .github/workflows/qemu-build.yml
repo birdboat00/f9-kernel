@@ -1,0 +1,76 @@
+name: Build QEMU
+
+# Build a minimal QEMU (arm-softmmu only) and upload as a GitHub release.
+# The test jobs in build.yml download this prebuilt binary instead of
+# compiling QEMU from source on every run.
+#
+# Trigger manually or bump QEMU_VERSION to rebuild.
+
+on:
+  workflow_dispatch:
+    inputs:
+      qemu_version:
+        description: 'QEMU version to build (e.g. 10.2.2)'
+        required: true
+        default: '10.2.2'
+
+env:
+  QEMU_VERSION: ${{ inputs.qemu_version || '10.2.2' }}
+
+permissions:
+  contents: write  # create releases
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Validate version format
+      run: |
+        if ! echo "${QEMU_VERSION}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+          echo "ERROR: Invalid QEMU_VERSION '${QEMU_VERSION}' (expected N.N.N)"
+          exit 1
+        fi
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ninja-build pkg-config libglib2.0-dev libpixman-1-dev
+
+    - name: Build QEMU ${{ env.QEMU_VERSION }} (arm-softmmu)
+      run: |
+        curl -fsSL "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" | tar xJ
+        cd "qemu-${QEMU_VERSION}"
+        ./configure \
+          --target-list=arm-softmmu \
+          --prefix=/opt/qemu \
+          --disable-docs
+        make -j$(nproc)
+        sudo make install
+
+    - name: Verify
+      run: |
+        /opt/qemu/bin/qemu-system-arm --version
+        /opt/qemu/bin/qemu-system-arm -M help | awk '{print $1}' | grep -Fx b-l475e-iot01a
+
+    - name: Package
+      run: |
+        tar -czf "qemu-${QEMU_VERSION}-arm-softmmu-linux-x86_64.tar.gz" -C /opt qemu
+
+    - name: Create release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        tag="qemu-v${QEMU_VERSION}"
+        asset="qemu-${QEMU_VERSION}-arm-softmmu-linux-x86_64.tar.gz"
+
+        # Upload to existing release, or create a new one.
+        # Upload first so the old asset stays available until replaced.
+        if gh release view "$tag" >/dev/null 2>&1; then
+          gh release upload "$tag" "$asset" --clobber
+        else
+          gh release create "$tag" "$asset" \
+            --title "QEMU ${QEMU_VERSION} (arm-softmmu, linux-x86_64)" \
+            --notes "Prebuilt QEMU ${QEMU_VERSION} (arm-softmmu only) for CI test jobs."
+        fi

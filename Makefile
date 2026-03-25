@@ -16,10 +16,10 @@ endif
 
 ifeq "$(CONFIG_BOARD_STM32F429DISCOVERY)" "y"
 BOARD ?= discoveryf429
-else ifeq "$(CONFIG_BOARD_NETDUINOPLUS2)" "y"
-BOARD ?= netduinoplus2
 else ifeq "$(CONFIG_BOARD_STM32F429NUCLEO)" "y"
 BOARD ?= nucleof429
+else ifeq "$(CONFIG_BOARD_B_L475E_IOT01A)" "y"
+BOARD ?= b-l475e-iot01a
 else
 BOARD ?= discoveryf4
 endif
@@ -32,8 +32,9 @@ out ?= build/$(BOARD)
 # output directory for host build targets
 out_host ?= build/host
 
-# QEMU command for netduinoplus2 emulation
-# Usage: qemu-system-arm -M netduinoplus2 -nographic -kernel build/netduinoplus2/f9.elf
+# QEMU emulation support (auto-detects board from build path)
+# Usage: make run-tests
+# Direct: qemu-system-arm -M b-l475e-iot01a -nographic -kernel build/b-l475e-iot01a/f9.elf
 QEMU ?= qemu-system-arm
 
 includes-user = user/include
@@ -114,8 +115,12 @@ include mk/generic.mk
 
 # Run tests with clean output (filtered debug messages)
 .PHONY: qemu-clean
-qemu-clean:
+qemu-clean: $(out)/f9.elf
 	@echo "Running F9 tests (clean output)..."
-	@python3 scripts/qemu-test.py $(out)/f9.elf -t 75 2>&1 | \
+	@$(PYTHON) scripts/qemu-test.py $(out)/f9.elf -t 75 2>&1 | \
 		grep -vE "^(IPC: |pager_|THREAD_CREATE:)" | \
 		grep -vE "^\[TEST:(RUN|PASS|FAIL|SKIP|START)\]" || true
+
+# Note: 'make run-tests' target defined in mk/generic.mk
+# Supports fault testing: make run-tests FAULT=mpu
+# Auto-detects board and QEMU machine from build path

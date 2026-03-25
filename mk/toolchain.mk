@@ -64,4 +64,4 @@ CFLAGS = \
 LDFLAGS = \
 	--gc-sections
 
-LIBGCC = $(shell $(CC) -print-libgcc-file-name)
+LIBGCC = $(shell $(CC) $(CFLAGS_CPU) -print-libgcc-file-name)

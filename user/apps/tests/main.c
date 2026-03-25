@@ -165,15 +165,15 @@ static void *test_main(void *user)
  *   HEAP_FPAGE: 512 bytes for thread pool metadata
  *
  * For canary fault test:
- *   Smaller stack to make overflow easier to trigger
+ *   Reserve enough space for pager bootstrap + at least one worker thread.
+ *   The worker stack used by the test is still 512 bytes in pager.c.
  */
 #if defined(FAULT_TYPE) && (FAULT_TYPE == FAULT_CANARY)
-/* Smaller stack for canary test (must match STACK_SIZE_WORDS in test-fault.c)
- */
+/* Minimum RES_FPAGE for pager bootstrap + one child thread. */
 DECLARE_USER(257,
              tests,
              test_main,
-             DECLARE_FPAGE(0x0, 2048) DECLARE_FPAGE(0x0, 512));
+             DECLARE_FPAGE(0x0, 4096) DECLARE_FPAGE(0x0, 512));
 #else
 /* Normal stack for test suite and MPU fault test */
 DECLARE_USER(257,
@@ -181,3 +181,9 @@ DECLARE_USER(257,
              test_main,
              DECLARE_FPAGE(0x0, 8192) DECLARE_FPAGE(0x0, 512));
 #endif
+
+/* Note: KDB interactive input requires UART (CONFIG_DEBUG_DEV_UART).
+ * Semihosting SYS_READC blocks the CPU, preventing other threads from
+ * running. For QEMU automated testing, KDB is activated via the test
+ * harness (scripts/qemu-test.py), not interactive input.
+ */

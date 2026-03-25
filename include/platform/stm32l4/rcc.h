@@ -1,7 +1,7 @@
-#ifndef PLATFORM_STM32F1_RCC_H__
-#define PLATFORM_STM32F1_RCC_H__
+#ifndef PLATFORM_STM32L4_RCC_H__
+#define PLATFORM_STM32L4_RCC_H__
 
-#include <platform/stm32f1/registers.h>
+#include <platform/stm32l4/registers.h>
 struct rcc_clocks {
     uint32_t sysclk_freq;
     uint32_t hclk_freq;
@@ -10,11 +10,17 @@ struct rcc_clocks {
 };
 
 /* RCC_FLAG definition */
+#define RCC_FLAG_MSIRDY                                  \
+    ((uint8_t) 0x01) /* MSI oscillator ready (new in L4) \
+                      */
 #define RCC_FLAG_HSIRDY ((uint8_t) 0x21)
 #define RCC_FLAG_HSERDY ((uint8_t) 0x31)
 #define RCC_FLAG_PLLRDY ((uint8_t) 0x39)
+#define RCC_FLAG_PLLSAI1RDY ((uint8_t) 0x3B) /* PLLSAI1 in L4 */
+#define RCC_FLAG_PLLSAI2RDY ((uint8_t) 0x3D) /* PLLSAI2 in L4 */
 #define RCC_FLAG_LSERDY ((uint8_t) 0x41)
 #define RCC_FLAG_LSIRDY ((uint8_t) 0x61)
+#define RCC_FLAG_BORRST ((uint8_t) 0x79)
 #define RCC_FLAG_PINRST ((uint8_t) 0x7A)
 #define RCC_FLAG_PORRST ((uint8_t) 0x7B)
 #define RCC_FLAG_SFTRST ((uint8_t) 0x7C)
@@ -23,8 +29,8 @@ struct rcc_clocks {
 #define RCC_FLAG_LPWRRST ((uint8_t) 0x7F)
 
 void sys_clock_init(void);
-void RCC_AHBPeriphClockCmd(uint32_t rcc_AHB, uint8_t enable);
-void RCC_AHBPeriphResetCmd(uint32_t rcc_AHB, uint8_t enable);
+void RCC_AHB1PeriphClockCmd(uint32_t rcc_AHB1, uint8_t enable);
+void RCC_AHB1PeriphResetCmd(uint32_t rcc_AHB1, uint8_t enable);
 void RCC_APB1PeriphClockCmd(uint32_t rcc_APB1, uint8_t enable);
 void RCC_APB1PeriphResetCmd(uint32_t rcc_APB1, uint8_t enable);
 void RCC_APB2PeriphClockCmd(uint32_t rcc_APB2, uint8_t enable);
